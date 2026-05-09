@@ -3,7 +3,7 @@
 
 >[!Tip]
 > 以 [DirectX-Graphics-Samples](https://github.com/microsoft/DirectX-Graphics-Samples) 的範例專案中的 [D3D12HelloTexture](https://github.com/microsoft/DirectX-Graphics-Samples/tree/master/Samples/Desktop/D3D12HelloWorld/src/HelloTexture) 為基礎做修改與擴充。
-> 其餘皆為自己撰寫，並無套用任何既成之 D3D12 渲染框架。
+> 其餘皆為自己撰寫 (部分有詢問 AI 來學習，但主要由我自己撰寫)，並無套用任何既成之 D3D12 渲染框架。
 
 >[!Tip]
 > 整合 [Open Asset Import Library (Assimp)](https://github.com/assimp/assimp) 來讀取模型與貼圖。
