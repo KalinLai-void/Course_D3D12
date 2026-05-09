@@ -37,12 +37,12 @@ PSOutput PSMain(PSInput input)
     PSOutput output;
     float4 texColor = g_texture.Sample(g_sampler, input.uv);
     
-    // Alpha Clipping [cite: 10]
+    // Alpha Clipping
     if (texColor.a < 0.1f)
         discard;
         
     output.albedo = texColor;
-    output.normal = float4(normalize(input.normal) * 0.5f + 0.5f, 1.0f); // ¬M®g¦Ü [0, 1] [cite: 11]
+    output.normal = float4(normalize(input.normal) * 0.5f + 0.5f, 1.0f); // [0, 1]
     output.worldPos = float4(input.worldPos, 1.0f);
     return output;
 }
