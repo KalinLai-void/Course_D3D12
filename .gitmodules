@@ -1,0 +1,3 @@
+[submodule "DirectX-Graphics-Samples"]
+	path = DirectX-Graphics-Samples
+	url = https://github.com/microsoft/DirectX-Graphics-Samples.git
