@@ -21,14 +21,18 @@
 
 ## How to control?
 - **WASD**: 第一人稱移動
+  - ![](imgs/move.gif)
 - **滑鼠**: 第一人稱轉視角
   - 程式一執行後，滑鼠會隱藏進入遊戲狀態，直接轉即可
   - 為了方便實作，目前程式中僅使用 **Euler Angles** 實作旋轉
     - 未來有機會時，應該實作更精準且不會卡死的 **Quaternions** 方法
+  - ![](imgs/turn-camera.gif)
 - **ESC**: 顯示滑鼠並暫時離開遊戲（此時視角不會轉）
   - 離開遊戲狀態時，可以按 **滑鼠右鍵** 拖曳視角
   - **滑鼠點畫面左鍵** 能夠回到遊戲狀態
+  - ![](imgs/drag-view.gif)
 - **Z**: 切換 Depth / Normal / Albedo / Final Color 狀態
+  - ![](imgs/switch-G-Buffer.gif)
 
 >[!Note] 
 > 互動的部分，有解耦獨立程式碼
