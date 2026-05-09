@@ -1,11 +1,11 @@
 # Assignment: Foundations of Real-Time Rendering – Deferred Shading
 根據[作業需求](Requirement.md)實作繪製 [Sponza 模型](./D3D12DeferredRenderer/D3D12DeferredRenderer/sponza/)
 
->[!Tip] 實作基礎
+>[!Tip]
 > 以 [DirectX-Graphics-Samples](https://github.com/microsoft/DirectX-Graphics-Samples) 的範例專案中的 [D3D12HelloTexture](https://github.com/microsoft/DirectX-Graphics-Samples/tree/master/Samples/Desktop/D3D12HelloWorld/src/HelloTexture) 為基礎做修改與擴充
 > 其餘皆為自己撰寫，並無套用任何既成之 D3D12 渲染框架
 
-> [!Tip] 模型讀取
+>[!Tip]
 > 整合 [Open Asset Import Library (Assimp)](https://github.com/assimp/assimp) 來讀取模型與貼圖
 > 若遇到透明貼圖，有在 Shader 中額外做 Alpha Clipping 處理
 
@@ -29,7 +29,8 @@
   - 離開遊戲狀態時，可以按 **滑鼠右鍵** 拖曳視角
   - **滑鼠點畫面左鍵** 能夠回到遊戲狀態
 
-> [!Note] 互動的部分，有解耦獨立程式碼
+>[!Note] 
+> 互動的部分，有解耦獨立程式碼
 > - `Camera.h` 及 `Camera.cpp` 用來處理攝影機相關
 > - `InputManager.h` 用來處理輸入相關
 > - 這些檔案目前在架構上皆為 Singleton 存在，因為目前不會有複數的情況
@@ -46,7 +47,7 @@
     - **Normal Buffer** (使用 R16G16B16A16\_FLOAT)
     - **Albedo Buffer** (使用 R8G8B8A8\_UNORM)
 
->[!Tip] 模型縮放
+>[!Tip]
 > 在 `D3D12HelloTexture.cpp` 的 `OnUpdate()` 中
 > `XMMATRIX modelMatrix = XMMatrixScaling(0.1f, 0.1f, 0.1f);` 將模型 scale 縮小至 0.1 倍
 > 所以在計算 Depth (深度圖) 時，distance 有縮小才看得比較清楚
