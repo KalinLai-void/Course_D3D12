@@ -2,12 +2,12 @@
 根據[作業需求](Requirement.md)實作繪製 [Sponza 模型](./D3D12DeferredRenderer/D3D12DeferredRenderer/sponza/)
 
 >[!Tip]
-> 以 [DirectX-Graphics-Samples](https://github.com/microsoft/DirectX-Graphics-Samples) 的範例專案中的 [D3D12HelloTexture](https://github.com/microsoft/DirectX-Graphics-Samples/tree/master/Samples/Desktop/D3D12HelloWorld/src/HelloTexture) 為基礎做修改與擴充
-> 其餘皆為自己撰寫，並無套用任何既成之 D3D12 渲染框架
+> 以 [DirectX-Graphics-Samples](https://github.com/microsoft/DirectX-Graphics-Samples) 的範例專案中的 [D3D12HelloTexture](https://github.com/microsoft/DirectX-Graphics-Samples/tree/master/Samples/Desktop/D3D12HelloWorld/src/HelloTexture) 為基礎做修改與擴充。
+> 其餘皆為自己撰寫，並無套用任何既成之 D3D12 渲染框架。
 
 >[!Tip]
-> 整合 [Open Asset Import Library (Assimp)](https://github.com/assimp/assimp) 來讀取模型與貼圖
-> 若遇到透明貼圖，有在 Shader 中額外做 Alpha Clipping 處理
+> 整合 [Open Asset Import Library (Assimp)](https://github.com/assimp/assimp) 來讀取模型與貼圖。
+> 若遇到透明貼圖，有在 Shader 中額外做 Alpha Clipping 處理。
 
 ## Results
 ### Final Color (最終合成之光照結果)
@@ -28,6 +28,7 @@
 - **ESC**: 顯示滑鼠並暫時離開遊戲（此時視角不會轉）
   - 離開遊戲狀態時，可以按 **滑鼠右鍵** 拖曳視角
   - **滑鼠點畫面左鍵** 能夠回到遊戲狀態
+- **Z**: 切換 Depth / Normal / Albedo / Final Color 狀態
 
 >[!Note] 
 > 互動的部分，有解耦獨立程式碼
@@ -49,9 +50,9 @@
 
 >[!Tip]
 > 在 `D3D12HelloTexture.cpp` 的 `OnUpdate()` 中
-> `XMMATRIX modelMatrix = XMMatrixScaling(0.1f, 0.1f, 0.1f);` 將模型 scale 縮小至 0.1 倍
-> 所以在計算 Depth (深度圖) 時，distance 有縮小才看得比較清楚
-> 在 `LightingPass.hlsl` 的 `PSLighting(...)` 中的 `float dist = length(cameraPos - worldPos) / 100.0f;`
+> `XMMATRIX modelMatrix = XMMatrixScaling(0.1f, 0.1f, 0.1f);` 將模型 scale 縮小至 0.1 倍。
+> 所以在計算 Depth (深度圖) 時，distance 有縮小才看得比較清楚。
+> 在 `LightingPass.hlsl` 的 `PSLighting(...)` 中的 `float dist = length(cameraPos - worldPos) / 100.0f;`。
 
 ### Lighting Pass
 - `LightingPass.hlsl` 用來處理光照渲染
