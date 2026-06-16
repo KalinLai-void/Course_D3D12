@@ -6,10 +6,10 @@
 using namespace DirectX;
 
 Camera::Camera() :
-    m_aspectRatio(1.77f), m_yaw(0.0f), m_pitch(0.0f),
+    m_aspectRatio(1.77f), m_yaw(180.0f), m_pitch(0.0f),
     m_moveSpeed(100.0f), m_sensitivity(0.1f)
 {
-    m_position = { -20.0f, 20.0f, 0.0f };
+    m_position = { 0.0f, 20.0f, 0.0f };
     m_worldUp = { 0.0f, 1.0f, 0.0f };
 }
 

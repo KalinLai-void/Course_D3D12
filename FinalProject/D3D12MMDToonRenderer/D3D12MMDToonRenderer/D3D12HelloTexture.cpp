@@ -30,6 +30,14 @@ extern "C" { __declspec(dllexport) extern const char* D3D12SDKPath = u8".\\D3D12
 
 namespace
 {
+    // File-local HUD visibility state.
+    // SPACE toggles all four HUD groups without requiring a header change.
+    bool g_showHud = true;
+
+    // F switches between a single hard shadow comparison and explicit 3x3 PCF.
+    // Keeping this file-local avoids changing D3D12HelloTexture.h.
+    bool g_enablePcf = true;
+
     float Clamp01(float value)
     {
         if (value < 0.0f)
@@ -232,6 +240,10 @@ void D3D12HelloTexture::LoadAssets()
     CreateGBuffers();
     CreateSSAOResources();
     CreateSSAOPipeline();
+
+    CreateShadowResources();
+    CreateShadowPipeline();
+
     //LoadModel(L"sponza/sponza.obj");
 
     AssimpLoader assimpLoader;
@@ -741,7 +753,7 @@ void D3D12HelloTexture::LoadAssets()
     // Lighting Pass
     {
         D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-        srvHeapDesc.NumDescriptors = 4;
+        srvHeapDesc.NumDescriptors = 5;
         srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
         srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         ThrowIfFailed(m_device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&m_gBufferSrvHeap)));
@@ -782,6 +794,18 @@ void D3D12HelloTexture::LoadAssets()
             srvHandle
         );
 
+        srvHandle.Offset(1, cbvSrvDescriptorSize);
+
+        // 第 5 張：Shadow Map
+        D3D12_SHADER_RESOURCE_VIEW_DESC shadowSrvDesc = {};
+        shadowSrvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        shadowSrvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        shadowSrvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        shadowSrvDesc.Texture2D.MostDetailedMip = 0;
+        shadowSrvDesc.Texture2D.MipLevels = 1;
+        m_device->CreateShaderResourceView(m_shadowTexture.Get(), &shadowSrvDesc, srvHandle);
+
+
         // create root signature for light pass
         D3D12_FEATURE_DATA_ROOT_SIGNATURE featureData = {};
         featureData.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_1;
@@ -805,18 +829,92 @@ void D3D12HelloTexture::LoadAssets()
         sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         CD3DX12_DESCRIPTOR_RANGE1 rangesLight[1];
-        rangesLight[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC);
+        rangesLight[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 5, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC);
 
-        CD3DX12_ROOT_PARAMETER1 rootParametersLight[2];
-        rootParametersLight[0].InitAsDescriptorTable(1, &rangesLight[0], D3D12_SHADER_VISIBILITY_PIXEL);
-        rootParametersLight[1].InitAsConstants(5, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
+        CD3DX12_ROOT_PARAMETER1 rootParametersLight[4];
+        rootParametersLight[0].InitAsDescriptorTable(
+            1,
+            &rangesLight[0],
+            D3D12_SHADER_VISIBILITY_PIXEL);
+
+        // b1: 32 DWORD lighting data.
+        rootParametersLight[1].InitAsConstants(
+            32,
+            1,
+            0,
+            D3D12_SHADER_VISIBILITY_PIXEL);
+
+        // b2: explicit master scene-light switch.
+        rootParametersLight[2].InitAsConstants(
+            1,
+            2,
+            0,
+            D3D12_SHADER_VISIBILITY_PIXEL);
+
+        // b3: shadow-filter switch.
+        // 0 = one hard comparison, 1 = explicit 3x3 PCF.
+        rootParametersLight[3].InitAsConstants(
+            1,
+            3,
+            0,
+            D3D12_SHADER_VISIBILITY_PIXEL);
+
+        CD3DX12_STATIC_SAMPLER_DESC lightSamplers[2] = {};
+
+        // s0: regular G-buffer / SSAO sampling.
+        lightSamplers[0].Filter =
+            D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+        lightSamplers[0].AddressU =
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        lightSamplers[0].AddressV =
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        lightSamplers[0].AddressW =
+            D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+        lightSamplers[0].ComparisonFunc =
+            D3D12_COMPARISON_FUNC_NEVER;
+        lightSamplers[0].MinLOD = 0.0f;
+        lightSamplers[0].MaxLOD =
+            D3D12_FLOAT32_MAX;
+        lightSamplers[0].ShaderRegister = 0;
+        lightSamplers[0].RegisterSpace = 0;
+        lightSamplers[0].ShaderVisibility =
+            D3D12_SHADER_VISIBILITY_PIXEL;
+
+        // s1: hardware comparison sampler for the shadow map.
+        // Explicit 3x3 PCF is performed in LightingPass.hlsl, so each
+        // comparison tap should be a point comparison.
+        lightSamplers[1].Filter =
+            D3D12_FILTER_COMPARISON_MIN_MAG_MIP_POINT;
+        lightSamplers[1].AddressU =
+            D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+        lightSamplers[1].AddressV =
+            D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+        lightSamplers[1].AddressW =
+            D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+        lightSamplers[1].ComparisonFunc =
+            D3D12_COMPARISON_FUNC_LESS_EQUAL;
+        lightSamplers[1].BorderColor =
+            D3D12_STATIC_BORDER_COLOR_OPAQUE_WHITE;
+        lightSamplers[1].MinLOD = 0.0f;
+        lightSamplers[1].MaxLOD =
+            D3D12_FLOAT32_MAX;
+        lightSamplers[1].ShaderRegister = 1;
+        lightSamplers[1].RegisterSpace = 0;
+        lightSamplers[1].ShaderVisibility =
+            D3D12_SHADER_VISIBILITY_PIXEL;
 
         CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC lightRootSigDesc;
-        lightRootSigDesc.Init_1_1(2, rootParametersLight, 1, &sampler, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+        lightRootSigDesc.Init_1_1(
+            _countof(rootParametersLight),
+            rootParametersLight,
+            _countof(lightSamplers),
+            lightSamplers,
+            D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
 
-        ComPtr<ID3DBlob> lightSignature, lightError;
-        D3DX12SerializeVersionedRootSignature(&lightRootSigDesc, featureData.HighestVersion, &lightSignature, &lightError);
-        m_device->CreateRootSignature(0, lightSignature->GetBufferPointer(), lightSignature->GetBufferSize(), IID_PPV_ARGS(&m_lightRootSignature));
+        ComPtr<ID3DBlob> signature;
+        ComPtr<ID3DBlob> error;
+        ThrowIfFailed(D3DX12SerializeVersionedRootSignature(&lightRootSigDesc, D3D_ROOT_SIGNATURE_VERSION_1_1, &signature, &error));
+        ThrowIfFailed(m_device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&m_lightRootSignature)));
 
         // create Pipeline State (PSO) for light pass ---
         ComPtr<ID3DBlob> vsLight, psLight, errBlob;
@@ -1035,21 +1133,70 @@ void D3D12HelloTexture::OnUpdate()
     cbData.model = XMMatrixTranspose(modelMatrix);
     cbData.mvp = XMMatrixTranspose(modelMatrix * viewMatrix * projectionMatrix);
 
-    // IMPORTANT:
-    // The previous package still used scale 12.0 in HLSL, placing the camera
-    // inside the PMX model. Start at 1.0 and adjust gradually.
-    // Preserve the original PMX object transform.
-    cbData.pmxPositionScale = XMFLOAT4(
-        0.0f,    // offset X
-        0.0f,    // offset Y
-        0.0f,    // offset Z
-        12.0f);  // original PMX scale
+    // Directional-light camera used by the shadow map.
+    // Keep this matrix valid even when scene lighting is disabled so that
+    // Render Mode 5 can still be used to inspect the shadow result.
+    // Build a normalized surface-to-light direction from azimuth/elevation.
+    // Elevation is kept away from exactly 90 degrees to avoid a degenerate
+    // LookAt up vector.
+    const float cosElevation =
+        cosf(m_directionalLightElevation);
 
-    cbData.pmxRotation = XMFLOAT4(
-        0.0f,
-        XMConvertToRadians(-90.0f), // original PMX Y rotation
-        0.0f,
-        0.0f);
+    const XMVECTOR surfaceToLight =
+        XMVector3Normalize(
+            XMVectorSet(
+                cosf(m_directionalLightAzimuth) *
+                    cosElevation,
+                sinf(m_directionalLightElevation),
+                sinf(m_directionalLightAzimuth) *
+                    cosElevation,
+                0.0f));
+
+    XMStoreFloat3(
+        &m_directionalLightDirection,
+        surfaceToLight);
+
+    const XMVECTOR targetPos =
+        XMVectorSet(0.0f, 25.0f, 0.0f, 1.0f);
+
+    const XMVECTOR lightPos =
+        XMVectorAdd(
+            targetPos,
+            XMVectorScale(surfaceToLight, 350.0f));
+
+    const float lightVerticalAmount =
+        fabsf(XMVectorGetY(surfaceToLight));
+
+    const XMVECTOR upDir =
+        lightVerticalAmount > 0.95f
+            ? XMVectorSet(0.0f, 0.0f, 1.0f, 0.0f)
+            : XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+
+    const XMMATRIX lightViewMatrix =
+        XMMatrixLookAtLH(
+            lightPos,
+            targetPos,
+            upDir);
+
+    const XMMATRIX lightProjMatrix =
+        XMMatrixOrthographicLH(
+            350.0f,
+            350.0f,
+            1.0f,
+            900.0f);
+
+    XMStoreFloat4x4(
+        &m_lightViewProj,
+        XMMatrixTranspose(
+            lightViewMatrix *
+            lightProjMatrix));
+
+    // Use the shared transform so GeometryPass and ShadowPass stay aligned.
+    cbData.pmxPositionScale =
+        m_pmxPositionScale;
+
+    cbData.pmxRotation =
+        m_pmxRotation;
 
     memcpy(m_pCbvDataBegin, &cbData, sizeof(ConstantBufferData));
     
@@ -1122,10 +1269,121 @@ void D3D12HelloTexture::PopulateCommandList()
     ThrowIfFailed(m_commandList->Reset(m_commandAllocator.Get(), m_pipelineState.Get()));
 
     // Set necessary state.
+    
+    // ==========================================
+    // Pass 0: Shadow Pass (生成陰影圖)
+    // ==========================================
+    m_commandList->SetPipelineState(m_shadowPipelineState.Get());
+    m_commandList->SetGraphicsRootSignature(m_shadowRootSignature.Get());
+
+    D3D12_VIEWPORT shadowViewport = { 0.0f, 0.0f, (float)m_shadowMapSize, (float)m_shadowMapSize, 0.0f, 1.0f };
+    D3D12_RECT shadowScissor = { 0, 0, (LONG)m_shadowMapSize, (LONG)m_shadowMapSize };
+    m_commandList->RSSetViewports(1, &shadowViewport);
+    m_commandList->RSSetScissorRects(1, &shadowScissor);
+
+    CD3DX12_CPU_DESCRIPTOR_HANDLE shadowDsvHandle(m_shadowDsvHeap->GetCPUDescriptorHandleForHeapStart());
+    m_commandList->ClearDepthStencilView(shadowDsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+    m_commandList->OMSetRenderTargets(0, nullptr, FALSE, &shadowDsvHandle);
+
+    m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+    m_commandList->IASetVertexBuffers(0, 1, &m_vertexBufferView);
+    m_commandList->SetGraphicsRootConstantBufferView(
+        1,
+        m_boneConstantBuffer->GetGPUVirtualAddress());
+
+    // Shadow pass also needs material textures so transparent PMX/Sponza
+    // pixels can be clipped instead of writing false depth.
+    ID3D12DescriptorHeap* shadowHeaps[] =
+    {
+        m_srvHeap.Get()
+    };
+
+    m_commandList->SetDescriptorHeaps(
+        _countof(shadowHeaps),
+        shadowHeaps);
+
+    const UINT shadowSrvSize =
+        m_device->GetDescriptorHandleIncrementSize(
+            D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+    for (const auto& mesh : m_meshes)
+    {
+        if (mesh.isCharacterMesh && !m_showCharacter) continue;
+        if (mesh.isSponzaWhiteMaterial) continue;
+
+        const XMMATRIX modelMatrix =
+            XMMatrixScaling(0.1f, 0.1f, 0.1f);
+
+        struct ShadowConsts
+        {
+            XMMATRIX model;
+            XMMATRIX lightVP;
+            XMFLOAT4 pmxPositionScale;
+            XMFLOAT4 pmxRotation;
+        } constants = {};
+
+        constants.model =
+            XMMatrixTranspose(modelMatrix);
+
+        // m_lightViewProj is already stored transposed for row-vector HLSL mul.
+        constants.lightVP =
+            XMLoadFloat4x4(&m_lightViewProj);
+
+        // These values are shared with GeometryPass.
+        // The previous code used (0, 0, 0, 12) and -90 degrees here while
+        // GeometryPass used (-400, 0, -100, 12) and +90 degrees. That rendered
+        // the PMX shadow at a completely different location.
+        constants.pmxPositionScale =
+            m_pmxPositionScale;
+
+        constants.pmxRotation =
+            m_pmxRotation;
+
+        m_commandList->SetGraphicsRoot32BitConstants(
+            0,
+            40,
+            &constants,
+            0);
+
+        CD3DX12_GPU_DESCRIPTOR_HANDLE shadowMaterialHandle(
+            m_srvHeap->GetGPUDescriptorHandleForHeapStart(),
+            mesh.descriptorBaseIndex,
+            shadowSrvSize);
+
+        m_commandList->SetGraphicsRootDescriptorTable(
+            2,
+            shadowMaterialHandle);
+
+        m_commandList->SetGraphicsRoot32BitConstant(
+            3,
+            mesh.opacityMode,
+            0);
+
+        m_commandList->DrawInstanced(
+            mesh.indexCount,
+            1,
+            mesh.startIndex,
+            0);
+    }
+
+    D3D12_RESOURCE_BARRIER shadowBarrier = {};
+    shadowBarrier.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    shadowBarrier.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    shadowBarrier.Transition.pResource = m_shadowTexture.Get();
+    shadowBarrier.Transition.StateBefore = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    shadowBarrier.Transition.StateAfter = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    shadowBarrier.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+    m_commandList->ResourceBarrier(1, &shadowBarrier);
+
     // ==========================================
     // Pass 1: Geometry Pass (draw model to G-Buffer)
     // ==========================================
+    m_commandList->SetPipelineState(m_pipelineState.Get());
     m_commandList->SetGraphicsRootSignature(m_rootSignature.Get());
+
+    m_commandList->RSSetViewports(1, &m_viewport);
+    m_commandList->RSSetScissorRects(1, &m_scissorRect);
 
     // binding MVP matrix to camera
     m_commandList->SetGraphicsRootConstantBufferView(1, m_constantBuffer->GetGPUVirtualAddress());
@@ -1139,12 +1397,15 @@ void D3D12HelloTexture::PopulateCommandList()
     m_commandList->RSSetViewports(1, &m_viewport);
     m_commandList->RSSetScissorRects(1, &m_scissorRect);
 
-    CD3DX12_CPU_DESCRIPTOR_HANDLE gBufferRtvHandle(m_gBufferRtvHeap->GetCPUDescriptorHandleForHeapStart());
-    UINT rtvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+    CD3DX12_CPU_DESCRIPTOR_HANDLE gbufferRtv(m_gBufferRtvHeap->GetCPUDescriptorHandleForHeapStart());
+    CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandles[3];
+    rtvHandles[0] = gbufferRtv;
+    rtvHandles[1] = gbufferRtv; rtvHandles[1].Offset(1, m_rtvDescriptorSize);
+    rtvHandles[2] = gbufferRtv; rtvHandles[2].Offset(2, m_rtvDescriptorSize);
 
     CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(m_dsvHeap->GetCPUDescriptorHandleForHeapStart());
     m_commandList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-    m_commandList->OMSetRenderTargets(GBUFFER_COUNT, &gBufferRtvHandle, TRUE, &dsvHandle);
+    m_commandList->OMSetRenderTargets(3, rtvHandles, FALSE, &dsvHandle);
 
     // Alpha is also used as a validity flag.  A cleared Position.a of 0 means
     // "no geometry was written here".  This is important after alpha clipping.
@@ -1158,11 +1419,11 @@ void D3D12HelloTexture::PopulateCommandList()
         clearPosition
     };
 
-    for (int i = 0; i < GBUFFER_COUNT; ++i)
-    {
-        CD3DX12_CPU_DESCRIPTOR_HANDLE handle(gBufferRtvHandle, i, rtvDescriptorSize);
-        m_commandList->ClearRenderTargetView(handle, clearColors[i], 0, nullptr);
+    const float clearColorZero[] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    for (int i = 0; i < 3; ++i) {
+        m_commandList->ClearRenderTargetView(rtvHandles[i], clearColorZero, 0, nullptr);
     }
+    m_commandList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
     m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     m_commandList->IASetVertexBuffers(0, 1, &m_vertexBufferView);
@@ -1375,7 +1636,7 @@ void D3D12HelloTexture::PopulateCommandList()
     m_commandList->SetDescriptorHeaps(_countof(lightHeaps), lightHeaps);
     m_commandList->SetGraphicsRootDescriptorTable(0, m_gBufferSrvHeap->GetGPUDescriptorHandleForHeapStart());
     
-    LightPassConstants lightConstants;
+    LightPassConstants lightConstants = {};
     lightConstants.renderMode = m_renderMode;
 
     XMFLOAT3 camPos = Camera::Get().GetPosition();
@@ -1385,62 +1646,158 @@ void D3D12HelloTexture::PopulateCommandList()
 
     // passing renderMode & camera position
     lightConstants.exposure = currentExposure;
-    // m_commandList->SetGraphicsRoot32BitConstants(1, 4, &lightConstants, 0);
-    m_commandList->SetGraphicsRoot32BitConstants(1, 5, &lightConstants, 0);
+
+    // Point-light and directional-light parameters.
+    // The master P-key switch is sent separately through root parameter 2.
+    lightConstants.padding0 = 0.0f;
+
+    // 把燈放在 Sponza 一樓大廳中央稍微偏上
+    lightConstants.pointLightPosX = 0.0f;
+    lightConstants.pointLightPosY = 45.0f;
+    lightConstants.pointLightPosZ = 0.0f;
+    lightConstants.pointLightRadius = 180.0f;
+
+    // 設定為溫暖的橘黃色火光
+    lightConstants.pointLightColorR = 1.0f;
+    lightConstants.pointLightColorG = 0.6f;
+    lightConstants.pointLightColorB = 0.2f;
+
+    lightConstants.directionalLightDirX =
+        m_directionalLightDirection.x;
+    lightConstants.directionalLightDirY =
+        m_directionalLightDirection.y;
+    lightConstants.directionalLightDirZ =
+        m_directionalLightDirection.z;
+
+    lightConstants.lightViewProj = m_lightViewProj;
+
+    m_commandList->SetGraphicsRoot32BitConstants(
+        1,
+        32,
+        &lightConstants,
+        0);
+
+    const UINT sceneLightsEnabled =
+        m_enableSceneLights ? 1u : 0u;
+
+    m_commandList->SetGraphicsRoot32BitConstant(
+        2,
+        sceneLightsEnabled,
+        0);
+
+    const UINT pcfEnabled =
+        g_enablePcf ? 1u : 0u;
+
+    m_commandList->SetGraphicsRoot32BitConstant(
+        3,
+        pcfEnabled,
+        0);
 
     // draw big trangle above full-screen，trigger Pixel Shader's lighting
     m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     m_commandList->DrawInstanced(3, 1, 0, 0);
 
     // ==========================================
-    // HUD / Text Overlay
-    // 必須放在 Back Buffer 仍為 RENDER_TARGET 時
+    // Four-corner HUD / Text Overlay
+    // Must be drawn while the back buffer is still a render target.
+    // SPACE toggles the complete HUD.
     // ==========================================
+    if (g_showHud)
     {
-        wchar_t overlayText[256] = {};
-
         const wchar_t* modeName = L"Unknown";
 
         switch (m_renderMode)
         {
-            case 0:
-                modeName = L"Depth";
-                break;
+        case 0:
+            modeName = L"Depth";
+            break;
 
-            case 1:
-                modeName = L"Normal";
-                break;
+        case 1:
+            modeName = L"Normal";
+            break;
 
-            case 2:
-                modeName = L"Albedo";
-                break;
+        case 2:
+            modeName = L"Albedo";
+            break;
 
-            case 3:
-                modeName = L"Final Color";
-                break;
-            case 4:
-                modeName = L"SSAO";
-                break;
+        case 3:
+            modeName = L"Final Color";
+            break;
+
+        case 4:
+            modeName = L"SSAO";
+            break;
+
+        case 5:
+            modeName = L"Shadow";
+            break;
         }
 
+        wchar_t topLeftText[256] = {};
+        wchar_t topRightText[256] = {};
+        wchar_t bottomLeftText[320] = {};
+        wchar_t bottomRightText[384] = {};
+
+        // Top-left: performance and render state.
         swprintf_s(
-            overlayText,
-            _countof(overlayText),
-            L"FPS: %.0f | "
-            L"PMX: %ls\n"
-            L"Render Mode: %ls\n"
-            L"Tone Mapping: ACES | "
-            L"Exposure: %.2f\n"
-            L"SSAO Apply: %ls | Radius: %.3f | Bias: %.3f | Intensity: %.2f",
+            topLeftText,
+            _countof(topLeftText),
+            L"[SYSTEM]\n"
+            L"FPS: %.0f\n"
+            L"Render Mode [Z]: %ls\n"
+            L"PMX [X]: %ls\n"
+            L"HUD [SPACE]: ON",
             m_currentFps,
-            m_showCharacter ? L"ON" : L"OFF",
             modeName,
+            m_showCharacter ? L"ON" : L"OFF");
+
+        // Top-right: direct-light controls.
+        swprintf_s(
+            topRightText,
+            _countof(topRightText),
+            L"[LIGHTING]\n"
+            L"Direct Lights [J]: %ls\n"
+            L"Shadow Filter [F]: %ls\n"
+            L"Horizontal [H / K]\n"
+            L"Vertical [U / M]",
+            m_enableSceneLights
+                ? L"ON"
+                : L"OFF - Ambient only",
+            g_enablePcf
+                ? L"PCF 3x3"
+                : L"HARD 1x1");
+
+        // Bottom-left: camera controls.
+        swprintf_s(
+            bottomLeftText,
+            _countof(bottomLeftText),
+            L"[CAMERA]\n"
+            L"Move: [W / A / S / D]\n"
+            L"Up [E] / Down [Q]\n"
+            L"Look: Mouse\n"
+            L"Unlock Cursor: [ESC]\n"
+            L"Pan (Need Unlock): [Right Mouse]");
+
+        // Bottom-right: post-processing controls.
+        swprintf_s(
+            bottomRightText,
+            _countof(bottomRightText),
+            L"[POST PROCESS]\n"
+            L"Tone Mapping: ACES\n"
+            L"Exposure [UP / DOWN]: %.2f\n"
+            L"---------------\n"
+            L"SSAO [C]: %ls\n"
+            L"Radius: [ decrease | ] increase\n"
+            L"Value: %.3f\n"
+            L"Bias: ; decrease | ' increase\n"
+            L"Value: %.3f\n"
+            L"Intensity: , decrease | . increase\n"
+            L"Value: %.2f",
             currentExposure,
             m_enableSsao ? L"ON" : L"OFF",
             m_ssaoRadius,
             m_ssaoBias,
-            m_ssaoIntensity
-        );
+            m_ssaoIntensity);
 
         ID3D12DescriptorHeap* uiHeaps[] =
         {
@@ -1449,35 +1806,107 @@ void D3D12HelloTexture::PopulateCommandList()
 
         m_commandList->SetDescriptorHeaps(
             _countof(uiHeaps),
-            uiHeaps
-        );
+            uiHeaps);
 
         m_spriteBatch->Begin(
-            m_commandList.Get()
-        );
+            m_commandList.Get());
 
-        const DirectX::SimpleMath::Vector2
-            textPosition(16.0f, 16.0f);
+        const float hudScale = 0.68f;
+        const float margin = 14.0f;
+        const float shadowOffset = 1.5f;
 
-        // 黑色陰影
-        m_spriteFont->DrawString(
-            m_spriteBatch.get(),
-            overlayText,
-            textPosition +
-            DirectX::SimpleMath::Vector2(
-                2.0f,
-                2.0f
-            ),
-            DirectX::Colors::Black
-        );
+        auto MeasureScaledText =
+            [&](const wchar_t* text)
+        {
+            DirectX::XMFLOAT2 rawSize = {};
 
-        // 白色文字
-        m_spriteFont->DrawString(
-            m_spriteBatch.get(),
-            overlayText,
-            textPosition,
-            DirectX::Colors::White
-        );
+            DirectX::XMStoreFloat2(
+                &rawSize,
+                m_spriteFont->MeasureString(text));
+
+            return DirectX::SimpleMath::Vector2(
+                rawSize.x * hudScale,
+                rawSize.y * hudScale);
+        };
+
+        auto DrawHudText =
+            [&](const wchar_t* text,
+                const DirectX::SimpleMath::Vector2& position)
+        {
+            // Compact black shadow for readability.
+            m_spriteFont->DrawString(
+                m_spriteBatch.get(),
+                text,
+                position +
+                    DirectX::SimpleMath::Vector2(
+                        shadowOffset,
+                        shadowOffset),
+                DirectX::Colors::Black,
+                0.0f,
+                DirectX::SimpleMath::Vector2(0.0f, 0.0f),
+                hudScale);
+
+            m_spriteFont->DrawString(
+                m_spriteBatch.get(),
+                text,
+                position,
+                DirectX::Colors::White,
+                0.0f,
+                DirectX::SimpleMath::Vector2(0.0f, 0.0f),
+                hudScale);
+        };
+
+        const DirectX::SimpleMath::Vector2 topLeftSize =
+            MeasureScaledText(topLeftText);
+
+        const DirectX::SimpleMath::Vector2 topRightSize =
+            MeasureScaledText(topRightText);
+
+        const DirectX::SimpleMath::Vector2 bottomLeftSize =
+            MeasureScaledText(bottomLeftText);
+
+        const DirectX::SimpleMath::Vector2 bottomRightSize =
+            MeasureScaledText(bottomRightText);
+
+        const DirectX::SimpleMath::Vector2 topLeftPosition(
+            margin,
+            margin);
+
+        const DirectX::SimpleMath::Vector2 topRightPosition(
+            static_cast<float>(m_width) -
+                margin -
+                topRightSize.x,
+            margin);
+
+        const DirectX::SimpleMath::Vector2 bottomLeftPosition(
+            margin,
+            static_cast<float>(m_height) -
+                margin -
+                bottomLeftSize.y);
+
+        const DirectX::SimpleMath::Vector2 bottomRightPosition(
+            static_cast<float>(m_width) -
+                margin -
+                bottomRightSize.x,
+            static_cast<float>(m_height) -
+                margin -
+                bottomRightSize.y);
+
+        DrawHudText(
+            topLeftText,
+            topLeftPosition);
+
+        DrawHudText(
+            topRightText,
+            topRightPosition);
+
+        DrawHudText(
+            bottomLeftText,
+            bottomLeftPosition);
+
+        DrawHudText(
+            bottomRightText,
+            bottomRightPosition);
 
         m_spriteBatch->End();
     }
@@ -1494,6 +1923,16 @@ void D3D12HelloTexture::PopulateCommandList()
     // let BackBuffer to PRESENT
     m_commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(m_renderTargets[m_frameIndex].Get(),
         D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));
+
+    D3D12_RESOURCE_BARRIER shadowBarrierRevert = {};
+    shadowBarrierRevert.Type = D3D12_RESOURCE_BARRIER_TYPE_TRANSITION;
+    shadowBarrierRevert.Flags = D3D12_RESOURCE_BARRIER_FLAG_NONE;
+    shadowBarrierRevert.Transition.pResource = m_shadowTexture.Get();
+    shadowBarrierRevert.Transition.StateBefore = D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE;
+    shadowBarrierRevert.Transition.StateAfter = D3D12_RESOURCE_STATE_DEPTH_WRITE;
+    shadowBarrierRevert.Transition.Subresource = D3D12_RESOURCE_BARRIER_ALL_SUBRESOURCES;
+
+    m_commandList->ResourceBarrier(1, &shadowBarrierRevert);
 
     ThrowIfFailed(m_commandList->Close());
 }
@@ -2050,6 +2489,151 @@ void D3D12HelloTexture::UpdateSSAOConstants()
     );
 }
 
+void D3D12HelloTexture::CreateShadowResources()
+{
+    // 建立 2048x2048 的深度貼圖 (TYPELESS 讓它可以同時當 DSV 與 SRV)
+    D3D12_RESOURCE_DESC texDesc = CD3DX12_RESOURCE_DESC::Tex2D(
+        DXGI_FORMAT_R32_TYPELESS, m_shadowMapSize, m_shadowMapSize, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL);
+
+    D3D12_CLEAR_VALUE optClear = {};
+    optClear.Format = DXGI_FORMAT_D32_FLOAT;
+    optClear.DepthStencil.Depth = 1.0f;
+    optClear.DepthStencil.Stencil = 0;
+
+    ThrowIfFailed(m_device->CreateCommittedResource(
+        &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT), D3D12_HEAP_FLAG_NONE,
+        &texDesc, D3D12_RESOURCE_STATE_DEPTH_WRITE, &optClear, IID_PPV_ARGS(&m_shadowTexture)));
+
+    // 建立 DSV Descriptor Heap
+    D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc = {};
+    dsvHeapDesc.NumDescriptors = 1;
+    dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+    dsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+    ThrowIfFailed(m_device->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&m_shadowDsvHeap)));
+
+    D3D12_DEPTH_STENCIL_VIEW_DESC dsvDesc = {};
+    dsvDesc.Format = DXGI_FORMAT_D32_FLOAT;
+    dsvDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+    dsvDesc.Texture2D.MipSlice = 0;
+    m_device->CreateDepthStencilView(m_shadowTexture.Get(), &dsvDesc, m_shadowDsvHeap->GetCPUDescriptorHandleForHeapStart());
+}
+
+void D3D12HelloTexture::CreateShadowPipeline()
+{
+    // Shadow Pass Root Signature
+    // 0 = b0 transform constants
+    // 1 = b1 bones
+    // 2 = t0 diffuse texture used for alpha cutout
+    // 3 = b2 opacity mode
+    CD3DX12_DESCRIPTOR_RANGE1 shadowTextureRange;
+    shadowTextureRange.Init(
+        D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+        1,
+        0,
+        0,
+        D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC);
+
+    CD3DX12_ROOT_PARAMETER1 rootParameters[4];
+
+    rootParameters[0].InitAsConstants(
+        40,
+        0,
+        0,
+        D3D12_SHADER_VISIBILITY_VERTEX);
+
+    rootParameters[1].InitAsConstantBufferView(
+        1,
+        0,
+        D3D12_ROOT_DESCRIPTOR_FLAG_NONE,
+        D3D12_SHADER_VISIBILITY_VERTEX);
+
+    rootParameters[2].InitAsDescriptorTable(
+        1,
+        &shadowTextureRange,
+        D3D12_SHADER_VISIBILITY_PIXEL);
+
+    rootParameters[3].InitAsConstants(
+        1,
+        2,
+        0,
+        D3D12_SHADER_VISIBILITY_PIXEL);
+
+    D3D12_STATIC_SAMPLER_DESC shadowMaterialSampler = {};
+    shadowMaterialSampler.Filter =
+        D3D12_FILTER_MIN_MAG_MIP_LINEAR;
+    shadowMaterialSampler.AddressU =
+        D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    shadowMaterialSampler.AddressV =
+        D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    shadowMaterialSampler.AddressW =
+        D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+    shadowMaterialSampler.ComparisonFunc =
+        D3D12_COMPARISON_FUNC_NEVER;
+    shadowMaterialSampler.MinLOD = 0.0f;
+    shadowMaterialSampler.MaxLOD =
+        D3D12_FLOAT32_MAX;
+    shadowMaterialSampler.ShaderRegister = 0;
+    shadowMaterialSampler.RegisterSpace = 0;
+    shadowMaterialSampler.ShaderVisibility =
+        D3D12_SHADER_VISIBILITY_PIXEL;
+
+    CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC rootSignatureDesc;
+    rootSignatureDesc.Init_1_1(
+        _countof(rootParameters),
+        rootParameters,
+        1,
+        &shadowMaterialSampler,
+        D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+
+    ComPtr<ID3DBlob> signature, error;
+    ThrowIfFailed(D3DX12SerializeVersionedRootSignature(&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1_1, &signature, &error));
+    ThrowIfFailed(m_device->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&m_shadowRootSignature)));
+
+    // Compile Shadow Shader
+    ComPtr<ID3DBlob> vsShadow, psShadow, errBlob;
+    HRESULT hrVS = D3DCompileFromFile(L"ShadowPass.hlsl", nullptr, nullptr, "VSMain", "vs_5_0", 0, 0, &vsShadow, &errBlob);
+    if (FAILED(hrVS)) ThrowIfFailed(hrVS);
+    HRESULT hrPS = D3DCompileFromFile(L"ShadowPass.hlsl", nullptr, nullptr, "PSMain", "ps_5_0", 0, 0, &psShadow, &errBlob);
+    if (FAILED(hrPS)) ThrowIfFailed(hrPS);
+
+    D3D12_INPUT_ELEMENT_DESC inputElementDescs[] = {
+        { "POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "BLENDINDICES", 0, DXGI_FORMAT_R32G32B32A32_UINT,  0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "BLENDWEIGHT",  0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 48, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+        { "TEXCOORD",     1, DXGI_FORMAT_R32_FLOAT,          0, 64, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+    };
+
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
+    psoDesc.InputLayout = { inputElementDescs, _countof(inputElementDescs) };
+    psoDesc.pRootSignature = m_shadowRootSignature.Get();
+    psoDesc.VS = CD3DX12_SHADER_BYTECODE(vsShadow.Get());
+    psoDesc.PS = CD3DX12_SHADER_BYTECODE(psShadow.Get());
+    psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+
+    psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+
+    // Balanced caster bias:
+    // the previous 1000 / 1.5 combination was large enough to detach the
+    // PMX shadow. Most acne is now handled by receiver normal-offset bias
+    // in LightingPass.hlsl.
+    psoDesc.RasterizerState.DepthBias = 300;
+    psoDesc.RasterizerState.DepthBiasClamp = 0.0006f;
+    psoDesc.RasterizerState.SlopeScaledDepthBias = 0.75f;
+
+    psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+    psoDesc.DepthStencilState.DepthEnable = TRUE;
+    psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    psoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    psoDesc.SampleMask = UINT_MAX;
+    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+    psoDesc.NumRenderTargets = 0; // Shadow Map 不需要畫顏色
+    psoDesc.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+    psoDesc.SampleDesc.Count = 1;
+    ThrowIfFailed(m_device->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_shadowPipelineState)));
+}
+
 void D3D12HelloTexture::HandleInput()
 {
     auto& input = InputManager::Get();
@@ -2078,8 +2662,14 @@ void D3D12HelloTexture::HandleInput()
         }
     }
 
+    // SPACE shows/hides all HUD information.
+    if (input.IsKeyJustPressed(VK_SPACE))
+    {
+        g_showHud = !g_showHud;
+    }
+
     if (input.IsKeyJustPressed('Z')) {
-        m_renderMode = (m_renderMode + 1) % 5;
+        m_renderMode = (m_renderMode + 1) % 6;
     }
 
     // Diagnostic toggle: X hides/shows only the PMX character.
@@ -2093,6 +2683,53 @@ void D3D12HelloTexture::HandleInput()
     if (input.IsKeyJustPressed('C'))
     {
         m_enableSsao = !m_enableSsao;
+    }
+
+    // J toggles all direct scene lights.
+    // Ambient base brightness intentionally remains visible when OFF.
+    if (input.IsKeyJustPressed('J'))
+    {
+        m_enableSceneLights =
+            !m_enableSceneLights;
+    }
+
+    // F switches between hard 1x1 shadow comparison and explicit 3x3 PCF.
+    if (input.IsKeyJustPressed('F'))
+    {
+        g_enablePcf =
+            !g_enablePcf;
+    }
+
+    // Horizontal directional-light rotation.
+    if (input.IsKeyDown('H'))
+    {
+        m_directionalLightAzimuth -=
+            0.8f * m_deltaTime;
+    }
+
+    if (input.IsKeyDown('K'))
+    {
+        m_directionalLightAzimuth +=
+            0.8f * m_deltaTime;
+    }
+
+    // Vertical directional-light elevation.
+    if (input.IsKeyDown('U'))
+    {
+        m_directionalLightElevation +=
+            0.65f * m_deltaTime;
+
+        if (m_directionalLightElevation > 1.40f)
+            m_directionalLightElevation = 1.40f;
+    }
+
+    if (input.IsKeyDown('M'))
+    {
+        m_directionalLightElevation -=
+            0.65f * m_deltaTime;
+
+        if (m_directionalLightElevation < 0.15f)
+            m_directionalLightElevation = 0.15f;
     }
 
     // Adjustable parameters required for the assignment:

@@ -52,6 +52,19 @@ private:
     UINT m_renderMode = 3;
     bool m_showCharacter = true;
 
+    // One shared PMX transform for every pass.
+    // GeometryPass and ShadowPass must use identical values or the visible
+    // character and its shadow will be rendered in different locations.
+    DirectX::XMFLOAT4 m_pmxPositionScale =
+        DirectX::XMFLOAT4(-400.0f, 0.0f, -100.0f, 12.0f);
+
+    DirectX::XMFLOAT4 m_pmxRotation =
+        DirectX::XMFLOAT4(
+            0.0f,
+            1.57079632679f, // +90 degrees
+            0.0f,
+            0.0f);
+
     static const UINT FrameCount = 2;
     static const UINT TextureWidth = 256;
     static const UINT TextureHeight = 256;
@@ -101,10 +114,40 @@ private:
         float cameraPosX;
         float cameraPosY;
         float cameraPosZ;
+
         float exposure;
+        float pointLightRadius;
+        float directionalLightDirX;
+        float padding0;
+
+        float pointLightPosX;
+        float pointLightPosY;
+        float pointLightPosZ;
+        float directionalLightDirY;
+
+        float pointLightColorR;
+        float pointLightColorG;
+        float pointLightColorB;
+        float directionalLightDirZ;
+
+        DirectX::XMFLOAT4X4 lightViewProj;
     };
 
-    float currentExposure = 0.5f;
+    static_assert(
+        sizeof(LightPassConstants) == 128,
+        "LightPassConstants must remain exactly 32 DWORDs.");
+
+    float currentExposure = 1.0f;
+    bool m_enableSceneLights = true;
+
+    // Directional-light controls:
+    // H / K = horizontal azimuth
+    // U / M = vertical elevation
+    float m_directionalLightAzimuth = -0.5880026f;
+    float m_directionalLightElevation = 0.95f;
+
+    DirectX::XMFLOAT3 m_directionalLightDirection =
+        DirectX::XMFLOAT3(0.45f, 0.81f, -0.30f);
 
     // G-Buffer
     enum GBufferType {
@@ -230,4 +273,15 @@ private:
     void UpdateSSAOConstants();
 
     void HandleInput();
+
+    // Shadow Map
+    UINT m_shadowMapSize = 2048; // ���ѪR�׳��v
+    ComPtr<ID3D12Resource> m_shadowTexture;
+    ComPtr<ID3D12DescriptorHeap> m_shadowDsvHeap;
+    ComPtr<ID3D12RootSignature> m_shadowRootSignature;
+    ComPtr<ID3D12PipelineState> m_shadowPipelineState;
+    DirectX::XMFLOAT4X4 m_lightViewProj;
+
+    void CreateShadowResources();
+    void CreateShadowPipeline();
 };
