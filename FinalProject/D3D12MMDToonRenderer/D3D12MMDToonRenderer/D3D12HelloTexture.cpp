@@ -712,15 +712,34 @@ void D3D12HelloTexture::OnUpdate()
 
     memcpy(m_pCbvDataBegin, &cbData, sizeof(ConstantBufferData));
     
-    // 1. 推進動畫時間
+    // MMD Animator
     m_animator.Update(m_deltaTime);
 
-    // 2. 將 256 個骨頭矩陣 Copy 給 b1 (m_boneConstantBuffer)
     if (m_pBoneDataBegin != nullptr)
     {
         const auto& skinningMatrices = m_animator.GetSkinningMatrices();
         memcpy(m_pBoneDataBegin, skinningMatrices.data(), sizeof(DirectX::XMMATRIX) * 1024);
     }
+
+    // 1. 計算 FPS
+    float fps = (m_deltaTime > 0.0f) ? (1.0f / m_deltaTime) : 0.0f;
+
+    // 2. 轉換 RenderMode 名稱
+    std::wstring modeName;
+    switch (m_renderMode) {
+    case 0: modeName = L"Depth"; break;
+    case 1: modeName = L"Normal"; break;
+    case 2: modeName = L"Albedo"; break;
+    case 3: modeName = L"Final Color"; break;
+    default: modeName = L"Unknown"; break;
+    }
+
+    // 3. 組合成標題字串
+    std::wstring title = L"FPS: " + std::to_wstring(static_cast<int>(fps)) +
+        L" | RenderMode: " + modeName;
+
+    // 4. 設定視窗標題
+    SetWindowTextW(Win32Application::GetHwnd(), title.c_str());
 
     InputManager::Get().EndFrame();
 }
