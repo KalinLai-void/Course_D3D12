@@ -65,14 +65,11 @@ float PSMain(PSInput input) : SV_TARGET
         return 1.0f;
     }
     
-    const float radius =
-        max(gParameters.x, 0.0001f);
+    const float radius = max(gParameters.x, 0.0001f);
 
-    const float bias =
-        max(gParameters.y, 0.0f);
+    const float bias = max(gParameters.y, 0.0f);
 
-    const float intensity =
-        max(gParameters.z, 0.0001f);
+    const float intensity = max(gParameters.z, 0.0001f);
 
     float4 positionSample =
         gPositionTexture.SampleLevel(

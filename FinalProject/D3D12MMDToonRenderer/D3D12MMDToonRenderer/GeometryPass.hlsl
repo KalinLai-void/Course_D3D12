@@ -78,11 +78,8 @@ PSInput VSMain(
             for (int i = 0; i < 4; ++i)
             {
                 uint safeBoneIndex = min(boneIndices[i], 1023u);
-                skinnedPos += weights[i] *
-                    mul(localPos, g_BoneTransforms[safeBoneIndex]);
-                skinnedNormal += weights[i] *
-                    mul(float4(normal, 0.0f),
-                        g_BoneTransforms[safeBoneIndex]).xyz;
+                skinnedPos += weights[i] * mul(localPos, g_BoneTransforms[safeBoneIndex]);
+                skinnedNormal += weights[i] * mul(float4(normal, 0.0f), g_BoneTransforms[safeBoneIndex]).xyz;
             }
         }
 
@@ -108,8 +105,7 @@ PSInput VSMain(
 
     result.position = mul(float4(finalPosition, 1.0f), mvpMatrix);
     result.worldPos = mul(float4(finalPosition, 1.0f), modelMatrix).xyz;
-    result.normal = normalize(
-        mul(float4(finalNormal, 0.0f), modelMatrix).xyz);
+    result.normal = normalize(mul(float4(finalNormal, 0.0f), modelMatrix).xyz);
     result.uv = uv;
     result.isCharacter = isCharacterFlag;
 
