@@ -1,12 +1,20 @@
 cbuffer DebugBuffer : register(b1)
 {
-    uint renderMode; // 0:Depth, 1:Normal, 2:Albedo, 3:Color
+    // 0: Depth
+    // 1: Normal
+    // 2: Albedo
+    // 3: Final Color
+    // 4: SSAO
+    uint renderMode;
+
     float3 cameraPos;
+    float exposure;
 };
 
 Texture2D g_gbufferAlbedo : register(t0);
 Texture2D g_gbufferNormal : register(t1);
 Texture2D g_gbufferPos : register(t2);
+Texture2D g_ssaoTexture : register(t3);
 SamplerState g_sampler : register(s0);
 
 static const float2 offsets[4] = { float2(-1, 0), float2(1, 0), float2(0, -1), float2(0, 1) };
@@ -28,8 +36,30 @@ PSInputLight VSLighting(uint vertexID : SV_VertexID)
 
 float4 PSLighting(PSInputLight input) : SV_TARGET
 {
-    float4 positionSample = g_gbufferPos.Sample(g_sampler, input.uv);
+    // SSAO Debug Mode
+    if (renderMode == 4)
+    {
+        float ao =
+            g_ssaoTexture.Sample(
+                g_sampler,
+                input.uv
+            ).r;
 
+        return float4(
+            ao,
+            ao,
+            ao,
+            1.0f
+        );
+    }
+
+    float4 positionSample =
+        g_gbufferPos.Sample(
+            g_sampler,
+            input.uv
+        );
+    
+    
     // Pixels removed by alpha clipping keep Position.a = 0.  Do not run
     // lighting or character outline code on those empty G-buffer pixels.
     if (positionSample.a < 0.5f)
@@ -106,9 +136,6 @@ float4 PSLighting(PSInputLight input) : SV_TARGET
         // 【寫實風格 (Blinn-Phong) - 用於 Sponza】
         float ambient = 0.28f;
         float NdotL = max(dot(normal, L), 0.0f);
-
-        // Do not add full-strength white specular to every Sponza material.
-        // It caused curtains and stone surfaces to clip to pure white.
         float specular = 0.0f;
         if (NdotL > 0.0f)
         {
@@ -116,7 +143,14 @@ float4 PSLighting(PSInputLight input) : SV_TARGET
         }
 
         finalColor = albedo * (NdotL + ambient) + specular.xxx;
+        
+        finalColor *= exposure;
+        
+        // 1. ACES Tone Mapping
         finalColor = (finalColor * (2.51f * finalColor + 0.03f)) / (finalColor * (2.43f * finalColor + 0.59f) + 0.14f);
+
+        // 2. Gamma Correction (將 Linear 轉回 sRGB 輸出給螢幕)
+        finalColor = pow(max(finalColor, 0.0f), 1.0f / 2.2f);
     }
 
     // ==========================================

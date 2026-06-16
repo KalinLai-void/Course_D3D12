@@ -101,7 +101,10 @@ private:
         float cameraPosX;
         float cameraPosY;
         float cameraPosZ;
+        float exposure;
     };
+
+    float currentExposure = 0.5f;
 
     // G-Buffer
     enum GBufferType {
@@ -115,6 +118,13 @@ private:
     ComPtr<ID3D12DescriptorHeap> m_gBufferRtvHeap;
     ComPtr<ID3D12DescriptorHeap> m_dsvHeap;
     ComPtr<ID3D12Resource> m_depthStencil;
+
+    // SSAO: white AO render target
+    UINT m_ssaoWidth = 0;
+    UINT m_ssaoHeight = 0;
+
+    ComPtr<ID3D12Resource> m_ssaoRawTexture;
+    ComPtr<ID3D12DescriptorHeap> m_ssaoRtvHeap;
 
     // Pipeline objects.
     CD3DX12_VIEWPORT m_viewport;
@@ -182,6 +192,7 @@ private:
     void WaitForPreviousFrame();
 
     void CreateGBuffers();
+    void CreateSSAOResources();
 
     void HandleInput();
 };

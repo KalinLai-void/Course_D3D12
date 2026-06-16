@@ -229,6 +229,7 @@ void D3D12HelloTexture::LoadPipeline()
 void D3D12HelloTexture::LoadAssets()
 {
     CreateGBuffers();
+    CreateSSAOResources();
     //LoadModel(L"sponza/sponza.obj");
 
     AssimpLoader assimpLoader;
@@ -738,7 +739,7 @@ void D3D12HelloTexture::LoadAssets()
     // Lighting Pass
     {
         D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-        srvHeapDesc.NumDescriptors = 3;
+        srvHeapDesc.NumDescriptors = 4;
         srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
         srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         ThrowIfFailed(m_device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&m_gBufferSrvHeap)));
@@ -756,6 +757,28 @@ void D3D12HelloTexture::LoadAssets()
             m_device->CreateShaderResourceView(m_gBufferTextures[i].Get(), &srvDesc, srvHandle);
             srvHandle.Offset(1, cbvSrvDescriptorSize);
         }
+
+        // 第 4 張：SSAO
+        D3D12_SHADER_RESOURCE_VIEW_DESC ssaoSrvDesc = {};
+
+        ssaoSrvDesc.Shader4ComponentMapping =
+            D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+
+        ssaoSrvDesc.Format =
+            DXGI_FORMAT_R8_UNORM;
+
+        ssaoSrvDesc.ViewDimension =
+            D3D12_SRV_DIMENSION_TEXTURE2D;
+
+        ssaoSrvDesc.Texture2D.MostDetailedMip = 0;
+        ssaoSrvDesc.Texture2D.MipLevels = 1;
+        ssaoSrvDesc.Texture2D.ResourceMinLODClamp = 0.0f;
+
+        m_device->CreateShaderResourceView(
+            m_ssaoRawTexture.Get(),
+            &ssaoSrvDesc,
+            srvHandle
+        );
 
         // create root signature for light pass
         D3D12_FEATURE_DATA_ROOT_SIGNATURE featureData = {};
@@ -780,11 +803,11 @@ void D3D12HelloTexture::LoadAssets()
         sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
 
         CD3DX12_DESCRIPTOR_RANGE1 rangesLight[1];
-        rangesLight[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 3, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC);
+        rangesLight[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 4, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC);
 
         CD3DX12_ROOT_PARAMETER1 rootParametersLight[2];
         rootParametersLight[0].InitAsDescriptorTable(1, &rangesLight[0], D3D12_SHADER_VISIBILITY_PIXEL);
-        rootParametersLight[1].InitAsConstants(4, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
+        rootParametersLight[1].InitAsConstants(5, 1, 0, D3D12_SHADER_VISIBILITY_PIXEL);
 
         CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC lightRootSigDesc;
         lightRootSigDesc.Init_1_1(2, rootParametersLight, 1, &sampler, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
@@ -1042,6 +1065,10 @@ void D3D12HelloTexture::OnUpdate()
         ? (1.0f / m_deltaTime)
         : 0.0f;
 
+    if (InputManager::Get().IsKeyDown(VK_UP)) currentExposure += 1.0f * m_deltaTime;
+    if (InputManager::Get().IsKeyDown(VK_DOWN)) currentExposure -= 1.0f * m_deltaTime;
+    if (currentExposure < 0.1f) currentExposure = 0.1f;
+
     InputManager::Get().EndFrame();
 }
 
@@ -1184,6 +1211,66 @@ void D3D12HelloTexture::PopulateCommandList()
     }
     m_commandList->ResourceBarrier(3, barriers);
 
+    // ==========================================
+// Pass 2: SSAO Step 1
+// 暫時只將 AO Texture 清成白色
+// ==========================================
+
+// SSAO：Pixel Shader Resource -> Render Target
+    D3D12_RESOURCE_BARRIER ssaoToRenderTarget =
+        CD3DX12_RESOURCE_BARRIER::Transition(
+            m_ssaoRawTexture.Get(),
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            D3D12_RESOURCE_STATE_RENDER_TARGET
+        );
+
+    m_commandList->ResourceBarrier(
+        1,
+        &ssaoToRenderTarget
+    );
+
+    // 綁定 SSAO RTV
+    CD3DX12_CPU_DESCRIPTOR_HANDLE ssaoRtvHandle(
+        m_ssaoRtvHeap
+        ->GetCPUDescriptorHandleForHeapStart()
+    );
+
+    m_commandList->OMSetRenderTargets(
+        1,
+        &ssaoRtvHandle,
+        FALSE,
+        nullptr
+    );
+
+    // 清成白色：AO = 1
+    const float clearAo[4] =
+    {
+        1.0f,
+        1.0f,
+        1.0f,
+        1.0f
+    };
+
+    m_commandList->ClearRenderTargetView(
+        ssaoRtvHandle,
+        clearAo,
+        0,
+        nullptr
+    );
+
+    // SSAO：Render Target -> Pixel Shader Resource
+    D3D12_RESOURCE_BARRIER ssaoToShaderResource =
+        CD3DX12_RESOURCE_BARRIER::Transition(
+            m_ssaoRawTexture.Get(),
+            D3D12_RESOURCE_STATE_RENDER_TARGET,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE
+        );
+
+    m_commandList->ResourceBarrier(
+        1,
+        &ssaoToShaderResource
+    );
+
     // let screen (BackBuffer) as Render Target
     m_commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(m_renderTargets[m_frameIndex].Get(),
         D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
@@ -1215,16 +1302,18 @@ void D3D12HelloTexture::PopulateCommandList()
     lightConstants.cameraPosZ = camPos.z;
 
     // passing renderMode & camera position
-    m_commandList->SetGraphicsRoot32BitConstants(1, 4, &lightConstants, 0);
+    lightConstants.exposure = currentExposure;
+    // m_commandList->SetGraphicsRoot32BitConstants(1, 4, &lightConstants, 0);
+    m_commandList->SetGraphicsRoot32BitConstants(1, 5, &lightConstants, 0);
 
     // draw big trangle above full-screen，trigger Pixel Shader's lighting
     m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     m_commandList->DrawInstanced(3, 1, 0, 0);
 
     // ==========================================
-// HUD / Text Overlay
-// 必須放在 Back Buffer 仍為 RENDER_TARGET 時
-// ==========================================
+    // HUD / Text Overlay
+    // 必須放在 Back Buffer 仍為 RENDER_TARGET 時
+    // ==========================================
     {
         wchar_t overlayText[256] = {};
 
@@ -1232,34 +1321,38 @@ void D3D12HelloTexture::PopulateCommandList()
 
         switch (m_renderMode)
         {
-        case 0:
-            modeName = L"Depth";
-            break;
+            case 0:
+                modeName = L"Depth";
+                break;
 
-        case 1:
-            modeName = L"Normal";
-            break;
+            case 1:
+                modeName = L"Normal";
+                break;
 
-        case 2:
-            modeName = L"Albedo";
-            break;
+            case 2:
+                modeName = L"Albedo";
+                break;
 
-        case 3:
-            modeName = L"Final Color";
-            break;
+            case 3:
+                modeName = L"Final Color";
+                break;
+            case 4:
+                modeName = L"SSAO";
+                break;
         }
 
         swprintf_s(
             overlayText,
             _countof(overlayText),
-            L"FPS: %.0f\n"
+            L"FPS: %.0f | "
+            L"PMX: %ls\n"
             L"Render Mode: %ls\n"
-            L"PMX: %ls",
+            L"Tone Mapping: ACES | "
+            L"Exposure: %.2f",
             m_currentFps,
+            m_showCharacter ? L"ON" : L"OFF",
             modeName,
-            m_showCharacter
-                ? L"ON"
-                : L"OFF"
+            currentExposure
         );
 
         ID3D12DescriptorHeap* uiHeaps[] =
@@ -1402,6 +1495,79 @@ void D3D12HelloTexture::CreateGBuffers() {
     m_device->CreateDepthStencilView(m_depthStencil.Get(), nullptr, m_dsvHeap->GetCPUDescriptorHandleForHeapStart());
 }
 
+void D3D12HelloTexture::CreateSSAOResources()
+{
+    m_ssaoWidth = m_width;
+    m_ssaoHeight = m_height;
+
+    // AO：
+    // 1.0 = 無遮蔽
+    // 0.0 = 完全遮蔽
+    D3D12_CLEAR_VALUE clearValue = {};
+    clearValue.Format = DXGI_FORMAT_R8_UNORM;
+
+    clearValue.Color[0] = 1.0f;
+    clearValue.Color[1] = 1.0f;
+    clearValue.Color[2] = 1.0f;
+    clearValue.Color[3] = 1.0f;
+
+    D3D12_RESOURCE_DESC textureDesc =
+        CD3DX12_RESOURCE_DESC::Tex2D(
+            DXGI_FORMAT_R8_UNORM,
+            static_cast<UINT64>(m_ssaoWidth),
+            m_ssaoHeight,
+            1, // array size
+            1, // mip levels
+            1, // sample count
+            0, // sample quality
+            D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET
+        );
+
+    CD3DX12_HEAP_PROPERTIES heapProperties(
+        D3D12_HEAP_TYPE_DEFAULT
+    );
+
+    ThrowIfFailed(
+        m_device->CreateCommittedResource(
+            &heapProperties,
+            D3D12_HEAP_FLAG_NONE,
+            &textureDesc,
+            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE,
+            &clearValue,
+            IID_PPV_ARGS(&m_ssaoRawTexture)
+        )
+    );
+
+    D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
+    rtvHeapDesc.NumDescriptors = 1;
+    rtvHeapDesc.Type =
+        D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+    rtvHeapDesc.Flags =
+        D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+
+    ThrowIfFailed(
+        m_device->CreateDescriptorHeap(
+            &rtvHeapDesc,
+            IID_PPV_ARGS(&m_ssaoRtvHeap)
+        )
+    );
+
+    D3D12_RENDER_TARGET_VIEW_DESC rtvDesc = {};
+    rtvDesc.Format =
+        DXGI_FORMAT_R8_UNORM;
+    rtvDesc.ViewDimension =
+        D3D12_RTV_DIMENSION_TEXTURE2D;
+    rtvDesc.Texture2D.MipSlice = 0;
+    rtvDesc.Texture2D.PlaneSlice = 0;
+
+    m_device->CreateRenderTargetView(
+        m_ssaoRawTexture.Get(),
+        &rtvDesc,
+        m_ssaoRtvHeap
+        ->GetCPUDescriptorHandleForHeapStart()
+    );
+}
+
 void D3D12HelloTexture::HandleInput()
 {
     auto& input = InputManager::Get();
@@ -1431,7 +1597,7 @@ void D3D12HelloTexture::HandleInput()
     }
 
     if (input.IsKeyJustPressed('Z')) {
-        m_renderMode = (m_renderMode + 1) % 4;
+        m_renderMode = (m_renderMode + 1) % 5;
     }
 
     // Diagnostic toggle: X hides/shows only the PMX character.
