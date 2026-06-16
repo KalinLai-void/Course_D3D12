@@ -1,4 +1,4 @@
-﻿//*********************************************************
+//*********************************************************
 //
 // Copyright (c) Microsoft. All rights reserved.
 // This code is licensed under the MIT License (MIT).
@@ -20,9 +20,70 @@
 #include <codecvt>
 #include <ResourceUploadBatch.h>
 #include <WICTextureLoader.h>
+#include <algorithm>
+#include <cwctype>
+#include <cwchar>
 
 extern "C" { __declspec(dllexport) extern const UINT D3D12SDKVersion = 619; }
 extern "C" { __declspec(dllexport) extern const char* D3D12SDKPath = u8".\\D3D12\\"; }
+
+namespace
+{
+    float Clamp01(float value)
+    {
+        if (value < 0.0f)
+            return 0.0f;
+
+        if (value > 1.0f)
+            return 1.0f;
+
+        return value;
+    }
+
+    UINT8 FloatToByte(float value)
+    {
+        value = Clamp01(value);
+        return static_cast<UINT8>(value * 255.0f + 0.5f);
+    }
+
+    UINT32 PackRGBA8(const DirectX::XMFLOAT4& color)
+    {
+        const UINT32 r = FloatToByte(color.x);
+        const UINT32 g = FloatToByte(color.y);
+        const UINT32 b = FloatToByte(color.z);
+        const UINT32 a = FloatToByte(color.w);
+
+        // Memory byte order for DXGI_FORMAT_R8G8B8A8_UNORM:
+        // R, G, B, A on little-endian Windows.
+        return r | (g << 8) | (b << 16) | (a << 24);
+    }
+
+    std::wstring MakeSolidColorToken(const DirectX::XMFLOAT4& color)
+    {
+        wchar_t buffer[32] = {};
+        swprintf_s(buffer, L"SOLID_RGBA8_%08X", PackRGBA8(color));
+        return buffer;
+    }
+
+    bool TryParseSolidColorToken(
+        const std::wstring& token,
+        UINT32& pixel)
+    {
+        const std::wstring prefix = L"SOLID_RGBA8_";
+        if (token.compare(0, prefix.size(), prefix) != 0)
+            return false;
+
+        const wchar_t* hexText = token.c_str() + prefix.size();
+        wchar_t* endPointer = nullptr;
+        const unsigned long value = wcstoul(hexText, &endPointer, 16);
+
+        if (endPointer == hexText || *endPointer != L'\0')
+            return false;
+
+        pixel = static_cast<UINT32>(value);
+        return true;
+    }
+}
 
 D3D12HelloTexture::D3D12HelloTexture(UINT width, UINT height, std::wstring name) :
     DXSample(width, height, name),
@@ -89,6 +150,12 @@ void D3D12HelloTexture::LoadPipeline()
             IID_PPV_ARGS(&m_device)
             ));
     }
+
+    // DirectXTK12 SpriteBatch allocates transient vertex data through
+    // GraphicsMemory. It must exist before the first SpriteBatch::End().
+    m_graphicsMemory =
+        std::make_unique<DirectX::GraphicsMemory>(
+            m_device.Get());
 
     // Describe and create the command queue.
     D3D12_COMMAND_QUEUE_DESC queueDesc = {};
@@ -165,14 +232,15 @@ void D3D12HelloTexture::LoadAssets()
     //LoadModel(L"sponza/sponza.obj");
 
     AssimpLoader assimpLoader;
-    if (assimpLoader.Load(L"Models/sponza/sponza.obj"))
+    if (assimpLoader.Load(L"Assets/Models/sponza/sponza.obj"))
     {
         for (const auto& av : assimpLoader.GetVertices()) {
             Vertex v = {};
             v.position = av.position;
             v.normal = av.normal;
             v.uv = av.uv;
-            v.boneWeights[0] = 0.0f; // static scene's weight use 0，Shader run Blinn-Phong
+            // Vertex v = {} already clears all bone indices and weights.
+            v.isCharacter = 0.0f;
             m_vertices.push_back(v);
         }
 
@@ -181,10 +249,31 @@ void D3D12HelloTexture::LoadAssets()
             MeshData mesh = {};
             mesh.startIndex = currentVertexOffset;
             mesh.indexCount = am.vertexCount;
+            mesh.opacityMode = am.opacityMode;
+            mesh.isCharacterMesh = false;
+            mesh.isSponzaWhiteMaterial =
+                (am.materialName == L"Material__47");
 
-            // handle textures
-            m_textureFiles.push_back(am.texturePath);
-            mesh.textureIndex = static_cast<int>(m_textureFiles.size() - 1);
+            // Each material occupies two consecutive SRV descriptors.
+            mesh.descriptorBaseIndex =
+                static_cast<UINT>(m_textureFiles.size());
+
+            // t0: map_Kd when available. A material that legitimately has
+            // no texture uses its MTL Kd color as a generated 1x1 texture.
+            // MISSING_TEXTURE remains magenta so a broken map_Kd is obvious.
+            if (am.hasDiffuseTexture)
+            {
+                m_textureFiles.push_back(am.diffuseTexturePath);
+            }
+            else
+            {
+                m_textureFiles.push_back(
+                    MakeSolidColorToken(am.diffuseColor));
+            }
+
+            // This Sponza package has no map_d entries. Keep t1 bound to a
+            // valid white texture; alpha-cutout materials read diffuse alpha.
+            m_textureFiles.push_back(L"DEFAULT_WHITE_TEXTURE");
 
             m_meshes.push_back(mesh);
             currentVertexOffset += am.vertexCount;
@@ -192,22 +281,12 @@ void D3D12HelloTexture::LoadAssets()
     }
 
     PMXLoader pmxLoader;
-    if (pmxLoader.Load(L"Models/MMD/KizunaAI_ver1.01/kizunaai/kizunaai.pmx"))
+    if (pmxLoader.Load(L"Assets/Models/MMD/KizunaAI_ver1.01/kizunaai/kizunaai.pmx"))
     {
-        UINT currentVertexOffset = static_cast<UINT>(m_vertices.size()); // 接在 Sponza 後面
+        UINT currentVertexOffset = static_cast<UINT>(m_vertices.size());
 
         const auto& pmxVerts = pmxLoader.GetVertices();
         const auto& pmxIndices = pmxLoader.GetIndices();
-
-        // 設定 MMD 模型的放大倍率與高度微調
-        float pmxScale = 12.0f;     // 放大倍率
-        float pmxOffsetY = 0.0f;    // 高度微調
-        float pmxRotationY = 90.0f; // 繞 Y 軸旋轉的角度 (度數)，可以試試 90, -90, 180
-
-        // 預先計算 Y 軸旋轉所需的 sin 和 cos (將角度轉為弧度)
-        float rad = pmxRotationY * (3.14159265f / 180.0f);
-        float cosY = cos(rad);
-        float sinY = sin(rad);
 
         for (uint32_t idx : pmxIndices) {
             const auto& pv = pmxVerts[idx];
@@ -217,9 +296,9 @@ void D3D12HelloTexture::LoadAssets()
             v.normal = pv.normal;
             v.uv = pv.uv;
 
-            // 🟢 解除封印：把真實的骨架 ID 與權重塞給 GPU
             memcpy(v.boneIndices, pv.boneIndices, sizeof(uint32_t) * 4);
             memcpy(v.boneWeights, pv.boneWeights, sizeof(float) * 4);
+            v.isCharacter = 1.0f;
 
             m_vertices.push_back(v);
         }
@@ -229,9 +308,19 @@ void D3D12HelloTexture::LoadAssets()
             MeshData mesh = {};
             mesh.startIndex = currentVertexOffset;
             mesh.indexCount = mat.indexCount; // 因為攤平了，Index 數量就是 Vertex 數量
+            mesh.opacityMode = ASSIMP_OPACITY_DIFFUSE_ALPHA;
+            mesh.isCharacterMesh = true;
+            mesh.isSponzaWhiteMaterial = false;
 
+            mesh.descriptorBaseIndex =
+                static_cast<UINT>(m_textureFiles.size());
+
+            // t0: PMX diffuse texture
             m_textureFiles.push_back(mat.texturePath);
-            mesh.textureIndex = static_cast<int>(m_textureFiles.size() - 1);
+
+            // t1: PMX has no separate map_d in this loader.
+            // Use a 1x1 white opacity texture.
+            m_textureFiles.push_back(L"DEFAULT_WHITE_TEXTURE");
 
             m_meshes.push_back(mesh);
             currentVertexOffset += mat.indexCount;
@@ -239,7 +328,7 @@ void D3D12HelloTexture::LoadAssets()
     }
 
     VMDLoader vmdLoader;
-    if (vmdLoader.Load(L"Models/MMD/Anims/rubychan_no_mouth.vmd"))
+    if (vmdLoader.Load(L"Assets/Models/MMD/Anims/rubychan_no_mouth.vmd"))
     {
         m_animator.Initialize(pmxLoader.GetBones(), vmdLoader.GetBoneAnimations());
     }
@@ -257,12 +346,27 @@ void D3D12HelloTexture::LoadAssets()
         }
 
         CD3DX12_DESCRIPTOR_RANGE1 ranges[1];
-        ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC);
 
-        CD3DX12_ROOT_PARAMETER1 rootParameters[3];
+        // One table containing two consecutive SRVs:
+        // t0 = diffuse, t1 = opacity.
+        ranges[0].Init(
+            D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+            2,
+            0,
+            0,
+            D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC);
+
+        CD3DX12_ROOT_PARAMETER1 rootParameters[4];
         rootParameters[0].InitAsDescriptorTable(1, &ranges[0], D3D12_SHADER_VISIBILITY_PIXEL);
         rootParameters[1].InitAsConstantBufferView(0, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_VERTEX);
         rootParameters[2].InitAsConstantBufferView(1, 0, D3D12_ROOT_DESCRIPTOR_FLAG_NONE, D3D12_SHADER_VISIBILITY_VERTEX);
+
+        // b2: per-material opacity mode used by the pixel shader.
+        rootParameters[3].InitAsConstants(
+            1,
+            2,
+            0,
+            D3D12_SHADER_VISIBILITY_PIXEL);
 
         D3D12_STATIC_SAMPLER_DESC sampler = {};
         sampler.Filter = D3D12_FILTER_ANISOTROPIC;
@@ -311,7 +415,8 @@ void D3D12HelloTexture::LoadAssets()
             { "TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 24, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
 
             { "BLENDINDICES", 0, DXGI_FORMAT_R32G32B32A32_UINT,  0, 32, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
-            { "BLENDWEIGHT",  0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 48, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
+            { "BLENDWEIGHT",  0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 48, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 },
+            { "TEXCOORD",     1, DXGI_FORMAT_R32_FLOAT,          0, 64, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0 }
         };
 
         // Describe and create the graphics pipeline state object (PSO).
@@ -413,80 +518,220 @@ void D3D12HelloTexture::LoadAssets()
     // prematurely destroyed.
     ComPtr<ID3D12Resource> textureUploadHeap;
 
-    // Create the texture.
-    // Create the texture.
+    // Create material textures.
     {
-        // 🚨 1. 初始化 COM (WIC 讀取 PNG/BMP 的絕對必要條件)
-        CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+        // WICTextureLoader requires COM.
+        const HRESULT comResult =
+            CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+
+        // RPC_E_CHANGED_MODE only means COM was initialized earlier using
+        // another apartment model; WIC can still be used by the application.
+        if (FAILED(comResult) &&
+            comResult != RPC_E_CHANGED_MODE)
+        {
+            ThrowIfFailed(comResult);
+        }
 
         ResourceUploadBatch resourceUpload(m_device.Get());
         resourceUpload.Begin();
 
-        // SRV Heap's size must equal to material's counts.
+        // m_textureFiles is arranged as pairs:
+        // [diffuse0, opacity0, diffuse1, opacity1, ...]
         D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
-        srvHeapDesc.NumDescriptors = static_cast<UINT>(m_textureFiles.size());
-        srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
-        ThrowIfFailed(m_device->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&m_srvHeap)));
+        srvHeapDesc.NumDescriptors =
+            static_cast<UINT>(m_textureFiles.size());
+        srvHeapDesc.Type =
+            D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+        srvHeapDesc.Flags =
+            D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
 
-        UINT srvSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        ThrowIfFailed(
+            m_device->CreateDescriptorHeap(
+                &srvHeapDesc,
+                IID_PPV_ARGS(&m_srvHeap)));
 
-        for (UINT i = 0; i < m_textureFiles.size(); i++) {
+        const UINT srvSize =
+            m_device->GetDescriptorHandleIncrementSize(
+                D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+
+        static const UINT32 whitePixel =
+            0xFFFFFFFFu;
+
+        // Little-endian RGBA8: FF 00 FF FF = magenta.
+        static const UINT32 missingDiffusePixel =
+            0xFFFF00FFu;
+
+        auto CreateSolidTexture =
+            [&](const UINT32* pixel,
+                ComPtr<ID3D12Resource>& textureResource)
+        {
+            D3D12_RESOURCE_DESC textureDesc =
+                CD3DX12_RESOURCE_DESC::Tex2D(
+                    DXGI_FORMAT_R8G8B8A8_UNORM,
+                    1,
+                    1,
+                    1,
+                    1);
+
+            ThrowIfFailed(
+                m_device->CreateCommittedResource(
+                    &CD3DX12_HEAP_PROPERTIES(
+                        D3D12_HEAP_TYPE_DEFAULT),
+                    D3D12_HEAP_FLAG_NONE,
+                    &textureDesc,
+                    D3D12_RESOURCE_STATE_COPY_DEST,
+                    nullptr,
+                    IID_PPV_ARGS(&textureResource)));
+
+            D3D12_SUBRESOURCE_DATA data = {};
+            data.pData = pixel;
+            data.RowPitch = sizeof(UINT32);
+            data.SlicePitch = sizeof(UINT32);
+
+            resourceUpload.Upload(
+                textureResource.Get(),
+                0,
+                &data,
+                1);
+
+            resourceUpload.Transition(
+                textureResource.Get(),
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+        };
+
+        for (UINT i = 0;
+             i < static_cast<UINT>(m_textureFiles.size());
+             ++i)
+        {
             ComPtr<ID3D12Resource> textureResource;
             HRESULT hr = E_FAIL;
-            std::wstring path = m_textureFiles[i];
 
-            bool isDDS = (path.find(L".dds") != std::wstring::npos || path.find(L".DDS") != std::wstring::npos);
+            const std::wstring path = m_textureFiles[i];
+            const bool isOpacityDescriptor = (i % 2u) == 1u;
 
-            if (path != L"MISSING_TEXTURE") {
-                if (isDDS) {
+            UINT32 generatedPixel = 0;
+
+            if (TryParseSolidColorToken(path, generatedPixel))
+            {
+                CreateSolidTexture(
+                    &generatedPixel,
+                    textureResource);
+
+                hr = S_OK;
+            }
+            else if (path == L"DEFAULT_WHITE_TEXTURE")
+            {
+                CreateSolidTexture(
+                    &whitePixel,
+                    textureResource);
+
+                hr = S_OK;
+            }
+            else if (path != L"MISSING_TEXTURE")
+            {
+                std::wstring lowerPath = path;
+
+                std::transform(
+                    lowerPath.begin(),
+                    lowerPath.end(),
+                    lowerPath.begin(),
+                    [](wchar_t c)
+                    {
+                        return static_cast<wchar_t>(
+                            std::towlower(c));
+                    });
+
+                const bool isDDS =
+                    lowerPath.size() >= 4 &&
+                    lowerPath.substr(lowerPath.size() - 4) ==
+                        L".dds";
+
+                if (isDDS)
+                {
                     std::unique_ptr<uint8_t[]> ddsData;
-                    std::vector<D3D12_SUBRESOURCE_DATA> subresources;
-                    hr = DirectX::LoadDDSTextureFromFile(m_device.Get(), path.c_str(), &textureResource, ddsData, subresources);
+                    std::vector<D3D12_SUBRESOURCE_DATA>
+                        subresources;
 
-                    if (SUCCEEDED(hr)) {
-                        resourceUpload.Upload(textureResource.Get(), 0, subresources.data(), static_cast<UINT>(subresources.size()));
-                        // 🚨 2. 手動上傳的 DDS 必須轉換狀態！
-                        resourceUpload.Transition(textureResource.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                    hr = DirectX::LoadDDSTextureFromFile(
+                        m_device.Get(),
+                        path.c_str(),
+                        &textureResource,
+                        ddsData,
+                        subresources);
+
+                    if (SUCCEEDED(hr))
+                    {
+                        resourceUpload.Upload(
+                            textureResource.Get(),
+                            0,
+                            subresources.data(),
+                            static_cast<UINT>(
+                                subresources.size()));
+
+                        resourceUpload.Transition(
+                            textureResource.Get(),
+                            D3D12_RESOURCE_STATE_COPY_DEST,
+                            D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
                     }
                 }
-                else {
-                    // WIC loader 內部會自動幫忙 Transition，所以不需要補
-                    hr = DirectX::CreateWICTextureFromFile(m_device.Get(), resourceUpload, path.c_str(), &textureResource);
+                else
+                {
+                    hr = DirectX::CreateWICTextureFromFile(
+                        m_device.Get(),
+                        resourceUpload,
+                        path.c_str(),
+                        &textureResource);
                 }
             }
 
-            // 如果失敗了，印出警告並生成 1x1 白圖
-            if (FAILED(hr)) {
-                // 🚨 3. 印出錯誤，讓你知道是哪張圖找不到
-                OutputDebugStringW((L"[Warning] Texture Load Failed: " + path + L"\n").c_str());
+            if (FAILED(hr))
+            {
+                OutputDebugStringW(
+                    (std::wstring(
+                         isOpacityDescriptor
+                             ? L"[Warning] Opacity texture load failed: "
+                             : L"[Warning] Diffuse texture load failed: ") +
+                     path +
+                     L"\n").c_str());
 
-                D3D12_RESOURCE_DESC texDesc = CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, 1, 1, 1, 1);
-                ThrowIfFailed(m_device->CreateCommittedResource(
-                    &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT), D3D12_HEAP_FLAG_NONE,
-                    &texDesc, D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&textureResource)));
+                textureResource.Reset();
 
-                static const UINT32 whitePixel = 0xFFFFFFFF;
-                D3D12_SUBRESOURCE_DATA whiteData = { &whitePixel, 4, 4 };
-                resourceUpload.Upload(textureResource.Get(), 0, &whiteData, 1);
-
-                // 🚨 4. 備用的白色貼圖也必須轉換狀態！否則 Shader 讀出來會是純黑
-                resourceUpload.Transition(textureResource.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE);
+                // Missing opacity remains fully visible so the material does
+                // not disappear. Missing diffuse is shown in magenta.
+                CreateSolidTexture(
+                    isOpacityDescriptor
+                        ? &whitePixel
+                        : &missingDiffusePixel,
+                    textureResource);
             }
 
             D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
-            srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
-            srvDesc.Format = textureResource->GetDesc().Format;
-            srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
-            srvDesc.Texture2D.MipLevels = textureResource->GetDesc().MipLevels;
+            srvDesc.Shader4ComponentMapping =
+                D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            srvDesc.Format =
+                textureResource->GetDesc().Format;
+            srvDesc.ViewDimension =
+                D3D12_SRV_DIMENSION_TEXTURE2D;
+            srvDesc.Texture2D.MipLevels =
+                textureResource->GetDesc().MipLevels;
 
-            CD3DX12_CPU_DESCRIPTOR_HANDLE hDescriptor(m_srvHeap->GetCPUDescriptorHandleForHeapStart(), i, srvSize);
-            m_device->CreateShaderResourceView(textureResource.Get(), &srvDesc, hDescriptor);
+            CD3DX12_CPU_DESCRIPTOR_HANDLE descriptor(
+                m_srvHeap->GetCPUDescriptorHandleForHeapStart(),
+                i,
+                srvSize);
+
+            m_device->CreateShaderResourceView(
+                textureResource.Get(),
+                &srvDesc,
+                descriptor);
 
             m_textures.push_back(textureResource);
         }
 
-        auto uploadFinished = resourceUpload.End(m_commandQueue.Get());
+        auto uploadFinished =
+            resourceUpload.End(m_commandQueue.Get());
+
         uploadFinished.wait();
     }
 
@@ -601,6 +846,55 @@ void D3D12HelloTexture::LoadAssets()
         // complete before continuing.
         WaitForPreviousFrame();
     }
+
+    // ==========================================
+    // Create HUD / text resources
+    // ==========================================
+    {
+        m_uiDescriptorHeap =
+            std::make_unique<DirectX::DescriptorHeap>(
+                m_device.Get(),
+                UI_DESCRIPTOR_COUNT
+            );
+
+        DirectX::ResourceUploadBatch upload(
+            m_device.Get()
+        );
+
+        upload.Begin();
+
+        // The HUD is drawn after lighting with no DSV bound.
+        DirectX::RenderTargetState renderTargetState(
+            DXGI_FORMAT_R8G8B8A8_UNORM,
+            DXGI_FORMAT_UNKNOWN
+        );
+
+        DirectX::SpriteBatchPipelineStateDescription
+            spritePipeline(renderTargetState);
+
+        m_spriteBatch =
+            std::make_unique<DirectX::SpriteBatch>(
+                m_device.Get(),
+                upload,
+                spritePipeline
+            );
+
+        m_spriteFont =
+            std::make_unique<DirectX::SpriteFont>(
+                m_device.Get(),
+                upload,
+                L"Assets/Debug.spritefont",
+                m_uiDescriptorHeap->GetCpuHandle(UI_FONT),
+                m_uiDescriptorHeap->GetGpuHandle(UI_FONT)
+            );
+
+        auto finished =
+            upload.End(m_commandQueue.Get());
+
+        finished.wait();
+
+        m_spriteBatch->SetViewport(m_viewport);
+    }
 }
 
 //void D3D12HelloTexture::LoadModel(std::wstring filename)
@@ -704,11 +998,33 @@ void D3D12HelloTexture::OnUpdate()
     struct ConstantBufferData {
         XMMATRIX model;
         XMMATRIX mvp;
+
+        // xyz = PMX translation in model space, w = PMX scale.
+        XMFLOAT4 pmxPositionScale;
+
+        // xyz = PMX Euler rotation in radians.
+        XMFLOAT4 pmxRotation;
     };
 
-    ConstantBufferData cbData;
+    ConstantBufferData cbData = {};
     cbData.model = XMMatrixTranspose(modelMatrix);
     cbData.mvp = XMMatrixTranspose(modelMatrix * viewMatrix * projectionMatrix);
+
+    // IMPORTANT:
+    // The previous package still used scale 12.0 in HLSL, placing the camera
+    // inside the PMX model. Start at 1.0 and adjust gradually.
+    // Preserve the original PMX object transform.
+    cbData.pmxPositionScale = XMFLOAT4(
+        0.0f,    // offset X
+        0.0f,    // offset Y
+        0.0f,    // offset Z
+        12.0f);  // original PMX scale
+
+    cbData.pmxRotation = XMFLOAT4(
+        0.0f,
+        XMConvertToRadians(-90.0f), // original PMX Y rotation
+        0.0f,
+        0.0f);
 
     memcpy(m_pCbvDataBegin, &cbData, sizeof(ConstantBufferData));
     
@@ -721,25 +1037,10 @@ void D3D12HelloTexture::OnUpdate()
         memcpy(m_pBoneDataBegin, skinningMatrices.data(), sizeof(DirectX::XMMATRIX) * 1024);
     }
 
-    // 1. 計算 FPS
-    float fps = (m_deltaTime > 0.0f) ? (1.0f / m_deltaTime) : 0.0f;
-
-    // 2. 轉換 RenderMode 名稱
-    std::wstring modeName;
-    switch (m_renderMode) {
-    case 0: modeName = L"Depth"; break;
-    case 1: modeName = L"Normal"; break;
-    case 2: modeName = L"Albedo"; break;
-    case 3: modeName = L"Final Color"; break;
-    default: modeName = L"Unknown"; break;
-    }
-
-    // 3. 組合成標題字串
-    std::wstring title = L"FPS: " + std::to_wstring(static_cast<int>(fps)) +
-        L" | RenderMode: " + modeName;
-
-    // 4. 設定視窗標題
-    SetWindowTextW(Win32Application::GetHwnd(), title.c_str());
+    m_currentFps =
+        (m_deltaTime > 0.0f)
+        ? (1.0f / m_deltaTime)
+        : 0.0f;
 
     InputManager::Get().EndFrame();
 }
@@ -756,6 +1057,14 @@ void D3D12HelloTexture::OnRender()
 
     // Present the frame.
     ThrowIfFailed(m_swapChain->Present(1, 0));
+
+    // Tell DirectXTK12 that this frame's transient SpriteBatch memory
+    // has been submitted to the GPU.
+    if (m_graphicsMemory)
+    {
+        m_graphicsMemory->Commit(
+            m_commandQueue.Get());
+    }
 
     WaitForPreviousFrame();
 }
@@ -806,10 +1115,22 @@ void D3D12HelloTexture::PopulateCommandList()
     m_commandList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
     m_commandList->OMSetRenderTargets(GBUFFER_COUNT, &gBufferRtvHandle, TRUE, &dsvHandle);
 
-    const float clearColorBlack[] = { 0.0f, 0.0f, 0.0f, 1.0f };
-    for (int i = 0; i < GBUFFER_COUNT; i++) {
+    // Alpha is also used as a validity flag.  A cleared Position.a of 0 means
+    // "no geometry was written here".  This is important after alpha clipping.
+    const float clearAlbedo[4]  = { 0.0f, 0.0f, 0.0f, 0.0f };
+    const float clearNormal[4]  = { 0.5f, 0.5f, 1.0f, 0.0f };
+    const float clearPosition[4]= { 0.0f, 0.0f, 0.0f, 0.0f };
+    const float* clearColors[GBUFFER_COUNT] =
+    {
+        clearAlbedo,
+        clearNormal,
+        clearPosition
+    };
+
+    for (int i = 0; i < GBUFFER_COUNT; ++i)
+    {
         CD3DX12_CPU_DESCRIPTOR_HANDLE handle(gBufferRtvHandle, i, rtvDescriptorSize);
-        m_commandList->ClearRenderTargetView(handle, clearColorBlack, 0, nullptr);
+        m_commandList->ClearRenderTargetView(handle, clearColors[i], 0, nullptr);
     }
 
     m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
@@ -817,11 +1138,38 @@ void D3D12HelloTexture::PopulateCommandList()
 
     UINT srvSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
-    // draw meshes' texture
-    for (const auto& mesh : m_meshes) {
-        CD3DX12_GPU_DESCRIPTOR_HANDLE texHandle(m_srvHeap->GetGPUDescriptorHandleForHeapStart(), mesh.textureIndex, srvSize);
-        m_commandList->SetGraphicsRootDescriptorTable(0, texHandle);
-        m_commandList->DrawInstanced(mesh.indexCount, 1, mesh.startIndex, 0);
+    // Draw each mesh using a two-SRV material table.
+    for (const auto& mesh : m_meshes)
+    {
+        if (mesh.isCharacterMesh && !m_showCharacter)
+            continue;
+
+        if (mesh.isSponzaWhiteMaterial)
+        {
+            continue;
+        }
+
+        CD3DX12_GPU_DESCRIPTOR_HANDLE materialHandle(
+            m_srvHeap->GetGPUDescriptorHandleForHeapStart(),
+            mesh.descriptorBaseIndex,
+            srvSize);
+
+        // materialHandle + 0 -> t0 diffuse
+        // materialHandle + 1 -> t1 opacity
+        m_commandList->SetGraphicsRootDescriptorTable(
+            0,
+            materialHandle);
+
+        m_commandList->SetGraphicsRoot32BitConstant(
+            3,
+            mesh.opacityMode,
+            0);
+
+        m_commandList->DrawInstanced(
+            mesh.indexCount,
+            1,
+            mesh.startIndex,
+            0);
     }
 
 
@@ -873,6 +1221,86 @@ void D3D12HelloTexture::PopulateCommandList()
     m_commandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     m_commandList->DrawInstanced(3, 1, 0, 0);
 
+    // ==========================================
+// HUD / Text Overlay
+// 必須放在 Back Buffer 仍為 RENDER_TARGET 時
+// ==========================================
+    {
+        wchar_t overlayText[256] = {};
+
+        const wchar_t* modeName = L"Unknown";
+
+        switch (m_renderMode)
+        {
+        case 0:
+            modeName = L"Depth";
+            break;
+
+        case 1:
+            modeName = L"Normal";
+            break;
+
+        case 2:
+            modeName = L"Albedo";
+            break;
+
+        case 3:
+            modeName = L"Final Color";
+            break;
+        }
+
+        swprintf_s(
+            overlayText,
+            _countof(overlayText),
+            L"FPS: %.0f\n"
+            L"Render Mode: %ls\n"
+            L"PMX: %ls",
+            m_currentFps,
+            modeName,
+            m_showCharacter
+                ? L"ON"
+                : L"OFF"
+        );
+
+        ID3D12DescriptorHeap* uiHeaps[] =
+        {
+            m_uiDescriptorHeap->Heap()
+        };
+
+        m_commandList->SetDescriptorHeaps(
+            _countof(uiHeaps),
+            uiHeaps
+        );
+
+        m_spriteBatch->Begin(
+            m_commandList.Get()
+        );
+
+        const DirectX::SimpleMath::Vector2
+            textPosition(16.0f, 16.0f);
+
+        // 黑色陰影
+        m_spriteFont->DrawString(
+            m_spriteBatch.get(),
+            overlayText,
+            textPosition +
+            DirectX::SimpleMath::Vector2(
+                2.0f,
+                2.0f
+            ),
+            DirectX::Colors::Black
+        );
+
+        // 白色文字
+        m_spriteFont->DrawString(
+            m_spriteBatch.get(),
+            overlayText,
+            textPosition,
+            DirectX::Colors::White
+        );
+
+        m_spriteBatch->End();
+    }
 
     // ==========================================
     // transfer resources to original
@@ -928,10 +1356,25 @@ void D3D12HelloTexture::CreateGBuffers() {
     UINT rtvDescriptorSize = m_device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
     CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(m_gBufferRtvHeap->GetCPUDescriptorHandleForHeapStart());
 
-    for (int i = 0; i < GBUFFER_COUNT; i++) {
+    const float optimizedClearValues[GBUFFER_COUNT][4] =
+    {
+        { 0.0f, 0.0f, 0.0f, 0.0f }, // Albedo
+        { 0.5f, 0.5f, 1.0f, 0.0f }, // Encoded normal, invalid pixel
+        { 0.0f, 0.0f, 0.0f, 0.0f }  // World position, invalid pixel
+    };
+
+    for (int i = 0; i < GBUFFER_COUNT; ++i)
+    {
         D3D12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Tex2D(
             formats[i], m_width, m_height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET);
-        D3D12_CLEAR_VALUE clearValue = { formats[i], { 0.0f, 0.0f, 0.0f, 1.0f } };
+
+        D3D12_CLEAR_VALUE clearValue = {};
+        clearValue.Format = formats[i];
+        clearValue.Color[0] = optimizedClearValues[i][0];
+        clearValue.Color[1] = optimizedClearValues[i][1];
+        clearValue.Color[2] = optimizedClearValues[i][2];
+        clearValue.Color[3] = optimizedClearValues[i][3];
+
         ThrowIfFailed(m_device->CreateCommittedResource(
             &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT), D3D12_HEAP_FLAG_NONE, &desc,
             D3D12_RESOURCE_STATE_RENDER_TARGET, &clearValue, IID_PPV_ARGS(&m_gBufferTextures[i])));
@@ -989,5 +1432,11 @@ void D3D12HelloTexture::HandleInput()
 
     if (input.IsKeyJustPressed('Z')) {
         m_renderMode = (m_renderMode + 1) % 4;
+    }
+
+    // Diagnostic toggle: X hides/shows only the PMX character.
+    // If the large white object disappears, it was the PMX model, not Sponza.
+    if (input.IsKeyJustPressed('X')) {
+        m_showCharacter = !m_showCharacter;
     }
 }

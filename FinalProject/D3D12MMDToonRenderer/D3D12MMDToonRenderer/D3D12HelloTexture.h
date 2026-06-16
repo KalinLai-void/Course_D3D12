@@ -19,6 +19,13 @@
 #include <assimp/scene.h>
 #include <assimp/postprocess.h>
 
+#include <SpriteBatch.h>
+#include <SpriteFont.h>
+#include <DescriptorHeap.h>
+#include <RenderTargetState.h>
+#include <SimpleMath.h>
+#include <GraphicsMemory.h>
+
 using namespace DirectX;
 
 // Note that while ComPtr is used to manage the lifetime of resources on the CPU,
@@ -43,6 +50,7 @@ private:
     float m_deltaTime;
     
     UINT m_renderMode = 3;
+    bool m_showCharacter = true;
 
     static const UINT FrameCount = 2;
     static const UINT TextureWidth = 256;
@@ -56,6 +64,11 @@ private:
 
         uint32_t boneIndices[4]; // bone ID
         float boneWeights[4];    // bone weights (total must = 1.0)
+
+        // 0.0f = static scene (Sponza), 1.0f = skinned PMX character.
+        // Do not infer this from bone weight because some valid PMX vertices
+        // may have zero/invalid weights and would otherwise tear the mesh.
+        float isCharacter;
     };
 
     // Textute
@@ -66,7 +79,20 @@ private:
     struct MeshData {
         UINT indexCount;
         UINT startIndex;
-        int textureIndex;
+
+        // Two consecutive descriptors:
+        // +0 = diffuse texture (t0)
+        // +1 = opacity texture (t1)
+        UINT descriptorBaseIndex;
+
+        // 0 = opaque, 1 = alpha cutout from diffuse alpha.
+        UINT opacityMode;
+
+        // False = Sponza/static mesh, true = PMX character mesh.
+        bool isCharacterMesh;
+
+        // The uploaded MTL explicitly assigns white.DDS to Material__47.
+        bool isSponzaWhiteMaterial;
     };
     std::vector<MeshData> m_meshes;
 
@@ -133,6 +159,20 @@ private:
     ComPtr<ID3D12RootSignature> m_lightRootSignature;
     ComPtr<ID3D12PipelineState> m_lightPipelineState;
     ComPtr<ID3D12DescriptorHeap> m_gBufferSrvHeap;
+
+    // UI
+    enum UIDescriptor
+    {
+        UI_FONT = 0,
+        UI_DESCRIPTOR_COUNT
+    };
+
+    std::unique_ptr<DirectX::GraphicsMemory> m_graphicsMemory;
+    std::unique_ptr<DirectX::DescriptorHeap> m_uiDescriptorHeap;
+    std::unique_ptr<DirectX::SpriteBatch> m_spriteBatch;
+    std::unique_ptr<DirectX::SpriteFont> m_spriteFont;
+
+    float m_currentFps = 0.0f;
 
     void LoadPipeline();
     void LoadAssets();

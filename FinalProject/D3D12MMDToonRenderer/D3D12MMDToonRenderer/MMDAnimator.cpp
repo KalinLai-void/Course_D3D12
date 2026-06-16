@@ -1,39 +1,54 @@
-﻿#include "stdafx.h"
+#include "stdafx.h"
 #include "MMDAnimator.h"
+
+#include <functional>
+#include <vector>
 
 using namespace DirectX;
 
-void MMDAnimator::Initialize(const std::vector<PMXBone>& bones, const std::map<std::wstring, std::vector<VMDBoneKeyframe>>& animations)
+void MMDAnimator::Initialize(
+    const std::vector<PMXBone>& bones,
+    const std::map<std::wstring, std::vector<VMDBoneKeyframe>>& animations)
 {
     m_bones.clear();
     m_bones.reserve(bones.size());
-    m_skinningMatrices.resize(1024, XMMatrixIdentity()); // 保證輸出 256 個矩陣
+    m_skinningMatrices.assign(1024, XMMatrixIdentity());
     m_maxFrame = 0;
 
-    for (size_t i = 0; i < bones.size(); ++i) {
+    for (size_t i = 0; i < bones.size(); ++i)
+    {
         BoneNode node = {};
         node.parentIndex = bones[i].parentIndex;
 
-        // 1. 計算 Inverse Bind Pose (用於將頂點從模型空間拉回原點)
-        node.inverseBindTranslation = XMFLOAT3(-bones[i].position.x, -bones[i].position.y, -bones[i].position.z);
+        node.inverseBindTranslation = XMFLOAT3(
+            -bones[i].position.x,
+            -bones[i].position.y,
+            -bones[i].position.z);
 
-        // 2. 計算 Local Bind Position (相對於父節點的初始偏移)
-        if (node.parentIndex >= 0 && node.parentIndex < (int)bones.size()) {
-            node.localBindPosition.x = bones[i].position.x - bones[node.parentIndex].position.x;
-            node.localBindPosition.y = bones[i].position.y - bones[node.parentIndex].position.y;
-            node.localBindPosition.z = bones[i].position.z - bones[node.parentIndex].position.z;
+        if (node.parentIndex >= 0 &&
+            node.parentIndex < static_cast<int>(bones.size()))
+        {
+            node.localBindPosition.x =
+                bones[i].position.x - bones[node.parentIndex].position.x;
+            node.localBindPosition.y =
+                bones[i].position.y - bones[node.parentIndex].position.y;
+            node.localBindPosition.z =
+                bones[i].position.z - bones[node.parentIndex].position.z;
         }
-        else {
+        else
+        {
             node.localBindPosition = bones[i].position;
         }
 
-        // 3. 從 VMD 中尋找對應名稱的動畫影格
-        auto it = animations.find(bones[i].name);
-        if (it != animations.end()) {
-            node.keyframes = it->second;
-            if (!node.keyframes.empty()) {
-                uint32_t lastFrame = node.keyframes.back().frame;
-                if (lastFrame > m_maxFrame) m_maxFrame = lastFrame;
+        const auto animationIt = animations.find(bones[i].name);
+        if (animationIt != animations.end())
+        {
+            node.keyframes = animationIt->second;
+            if (!node.keyframes.empty())
+            {
+                const uint32_t lastFrame = node.keyframes.back().frame;
+                if (lastFrame > m_maxFrame)
+                    m_maxFrame = lastFrame;
             }
         }
 
@@ -43,85 +58,141 @@ void MMDAnimator::Initialize(const std::vector<PMXBone>& bones, const std::map<s
 
 void MMDAnimator::Update(float deltaTime)
 {
-    if (m_bones.empty()) return;
+    if (m_bones.empty())
+        return;
 
-    // 推進時間 (循環播放)
     m_currentTime += deltaTime * m_fps;
-    if (m_currentTime > (float)m_maxFrame) {
+    if (m_maxFrame > 0 && m_currentTime > static_cast<float>(m_maxFrame))
         m_currentTime = 0.0f;
-    }
 
-    std::vector<XMMATRIX> globalMatrices(m_bones.size());
+    const size_t boneCount = m_bones.size();
 
-    // 逐一計算每根骨頭的變換矩陣
-    for (size_t i = 0; i < m_bones.size(); ++i) {
-        const auto& bone = m_bones[i];
+    std::vector<XMMATRIX> localMatrices(boneCount, XMMatrixIdentity());
+    std::vector<XMMATRIX> globalMatrices(boneCount, XMMatrixIdentity());
+    std::vector<unsigned char> resolveState(boneCount, 0);
+
+    // First build every local transform.  Do not assume that a parent bone is
+    // stored before its child in the PMX file.
+    for (size_t i = 0; i < boneCount; ++i)
+    {
+        const BoneNode& bone = m_bones[i];
 
         XMVECTOR animPos = XMVectorZero();
         XMVECTOR animRot = XMQuaternionIdentity();
 
-        // --- 尋找關鍵影格並進行插值 ---
-        if (!bone.keyframes.empty()) {
-            if (m_currentTime <= bone.keyframes.front().frame) {
+        if (!bone.keyframes.empty())
+        {
+            if (m_currentTime <= bone.keyframes.front().frame)
+            {
                 animPos = XMLoadFloat3(&bone.keyframes.front().position);
-                animRot = XMLoadFloat4(&bone.keyframes.front().rotation);
+                animRot = XMQuaternionNormalize(
+                    XMLoadFloat4(&bone.keyframes.front().rotation));
             }
-            else if (m_currentTime >= bone.keyframes.back().frame) {
+            else if (m_currentTime >= bone.keyframes.back().frame)
+            {
                 animPos = XMLoadFloat3(&bone.keyframes.back().position);
-                animRot = XMLoadFloat4(&bone.keyframes.back().rotation);
+                animRot = XMQuaternionNormalize(
+                    XMLoadFloat4(&bone.keyframes.back().rotation));
             }
-            else {
-                // 線性搜尋目前的區間 (因為影格不多，這裡用迴圈即可)
-                for (size_t k = 0; k < bone.keyframes.size() - 1; ++k) {
-                    const auto& k0 = bone.keyframes[k];
-                    const auto& k1 = bone.keyframes[k + 1];
+            else
+            {
+                for (size_t k = 0; k + 1 < bone.keyframes.size(); ++k)
+                {
+                    const VMDBoneKeyframe& k0 = bone.keyframes[k];
+                    const VMDBoneKeyframe& k1 = bone.keyframes[k + 1];
 
-                    if (m_currentTime >= k0.frame && m_currentTime <= k1.frame) {
-
+                    if (m_currentTime >= k0.frame &&
+                        m_currentTime <= k1.frame)
+                    {
                         float t = 0.0f;
-                        // 🚨 防護 1：絕對防止除以零！
-                        if (k1.frame > k0.frame) {
-                            t = (m_currentTime - k0.frame) / (float)(k1.frame - k0.frame);
+                        if (k1.frame > k0.frame)
+                        {
+                            t = (m_currentTime - static_cast<float>(k0.frame)) /
+                                static_cast<float>(k1.frame - k0.frame);
                         }
 
-                        XMVECTOR p0 = XMLoadFloat3(&k0.position);
-                        XMVECTOR p1 = XMLoadFloat3(&k1.position);
-                        animPos = XMVectorLerp(p0, p1, t);
+                        animPos = XMVectorLerp(
+                            XMLoadFloat3(&k0.position),
+                            XMLoadFloat3(&k1.position),
+                            t);
 
-                        // 🚨 防護 2：強制正規化 (Normalize)，防止浮點數誤差導致 Slerp 吐出 NaN
-                        XMVECTOR r0 = XMQuaternionNormalize(XMLoadFloat4(&k0.rotation));
-                        XMVECTOR r1 = XMQuaternionNormalize(XMLoadFloat4(&k1.rotation));
-                        animRot = XMQuaternionSlerp(r0, r1, t);
+                        const XMVECTOR r0 = XMQuaternionNormalize(
+                            XMLoadFloat4(&k0.rotation));
+                        const XMVECTOR r1 = XMQuaternionNormalize(
+                            XMLoadFloat4(&k1.rotation));
+                        animRot = XMQuaternionNormalize(
+                            XMQuaternionSlerp(r0, r1, t));
                         break;
                     }
                 }
             }
         }
 
-        // --- 計算 Local Matrix ---
-        XMVECTOR localBindPos = XMLoadFloat3(&bone.localBindPosition);
-        XMVECTOR finalLocalPos = XMVectorAdd(localBindPos, animPos); // 初始偏移 + 動畫偏移
+        const XMVECTOR bindTranslation =
+            XMLoadFloat3(&bone.localBindPosition);
+        const XMVECTOR localTranslation =
+            XMVectorAdd(bindTranslation, animPos);
 
-        XMMATRIX localMatrix = XMMatrixAffineTransformation(
-            XMVectorSet(1, 1, 1, 0), XMVectorZero(), animRot, finalLocalPos
-        );
+        localMatrices[i] = XMMatrixAffineTransformation(
+            XMVectorSet(1.0f, 1.0f, 1.0f, 0.0f),
+            XMVectorZero(),
+            animRot,
+            localTranslation);
+    }
 
-        // --- 計算 Global Matrix (乘上父節點) ---
-        if (bone.parentIndex >= 0 && bone.parentIndex < (int)i) {
-            // DirectX 數學是 Row-Major，乘法順序：Local * ParentGlobal
-            globalMatrices[i] = XMMatrixMultiply(localMatrix, globalMatrices[bone.parentIndex]);
+    // Resolve the hierarchy recursively.  The old code only used a parent when
+    // parentIndex < childIndex; valid PMX files do not require that ordering.
+    std::function<void(size_t)> resolveGlobal = [&](size_t index)
+    {
+        if (resolveState[index] == 2)
+            return;
+
+        // Break malformed cyclic hierarchies safely.
+        if (resolveState[index] == 1)
+        {
+            globalMatrices[index] = localMatrices[index];
+            resolveState[index] = 2;
+            return;
         }
-        else {
-            globalMatrices[i] = localMatrix;
+
+        resolveState[index] = 1;
+
+        const int parentIndex = m_bones[index].parentIndex;
+        if (parentIndex >= 0 &&
+            parentIndex < static_cast<int>(boneCount) &&
+            parentIndex != static_cast<int>(index))
+        {
+            resolveGlobal(static_cast<size_t>(parentIndex));
+            globalMatrices[index] = XMMatrixMultiply(
+                localMatrices[index],
+                globalMatrices[parentIndex]);
+        }
+        else
+        {
+            globalMatrices[index] = localMatrices[index];
         }
 
-        // --- 計算最終送給 GPU 的 Skinning Matrix ---
-        // Skinning Matrix = InverseBindPose * GlobalAnimated
-        XMMATRIX invBind = XMMatrixTranslation(bone.inverseBindTranslation.x, bone.inverseBindTranslation.y, bone.inverseBindTranslation.z);
+        resolveState[index] = 2;
+    };
 
-        if (i < 1024) {
-            // 🚨 HLSL Shader 的 mul(v, M) 需要轉置矩陣 (Transpose)
-            m_skinningMatrices[i] = XMMatrixTranspose(XMMatrixMultiply(invBind, globalMatrices[i]));
-        }
+    for (size_t i = 0; i < boneCount; ++i)
+        resolveGlobal(i);
+
+    // Reset unused entries as identity so stale matrices can never affect a
+    // later model with fewer bones.
+    m_skinningMatrices.assign(1024, XMMatrixIdentity());
+
+    const size_t outputCount = boneCount < 1024 ? boneCount : 1024;
+    for (size_t i = 0; i < outputCount; ++i)
+    {
+        const BoneNode& bone = m_bones[i];
+        const XMMATRIX inverseBind = XMMatrixTranslation(
+            bone.inverseBindTranslation.x,
+            bone.inverseBindTranslation.y,
+            bone.inverseBindTranslation.z);
+
+        // GeometryPass uses mul(rowVector, matrix), so upload transposed data.
+        m_skinningMatrices[i] = XMMatrixTranspose(
+            XMMatrixMultiply(inverseBind, globalMatrices[i]));
     }
 }

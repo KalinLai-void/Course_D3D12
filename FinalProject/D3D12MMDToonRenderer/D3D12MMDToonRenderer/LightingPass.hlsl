@@ -28,6 +28,16 @@ PSInputLight VSLighting(uint vertexID : SV_VertexID)
 
 float4 PSLighting(PSInputLight input) : SV_TARGET
 {
+    float4 positionSample = g_gbufferPos.Sample(g_sampler, input.uv);
+
+    // Pixels removed by alpha clipping keep Position.a = 0.  Do not run
+    // lighting or character outline code on those empty G-buffer pixels.
+    if (positionSample.a < 0.5f)
+    {
+        return float4(0.0f, 0.2f, 0.4f, 1.0f);
+    }
+
+    float3 worldPos = positionSample.xyz;
     float3 albedo = g_gbufferAlbedo.Sample(g_sampler, input.uv).rgb;
     
     float4 normalSample = g_gbufferNormal.Sample(g_sampler, input.uv);
@@ -35,7 +45,6 @@ float4 PSLighting(PSInputLight input) : SV_TARGET
     float isCharacter = normalSample.a; // 讀取 Character 標記
     
     float3 normal = normalize(rawNormal * 2.0f - 1.0f);
-    float3 worldPos = g_gbufferPos.Sample(g_sampler, input.uv).xyz;
 
     float3 L = normalize(float3(-0.577f, -0.577f, -0.577f));
     float3 V = normalize(cameraPos - worldPos);
@@ -95,12 +104,18 @@ float4 PSLighting(PSInputLight input) : SV_TARGET
     else
     {
         // 【寫實風格 (Blinn-Phong) - 用於 Sponza】
-        float ambient = 0.2f;
-        float diffuse = max(dot(normal, L), 0.0f);
-        float specular = pow(max(dot(normal, H), 0.0f), 32.0f);
-        finalColor = albedo * (diffuse + ambient) + float3(1.0f, 1.0f, 1.0f) * specular;
+        float ambient = 0.28f;
+        float NdotL = max(dot(normal, L), 0.0f);
 
-        finalColor *= 1.2f;
+        // Do not add full-strength white specular to every Sponza material.
+        // It caused curtains and stone surfaces to clip to pure white.
+        float specular = 0.0f;
+        if (NdotL > 0.0f)
+        {
+            specular = pow(max(dot(normal, H), 0.0f), 32.0f) * 0.08f;
+        }
+
+        finalColor = albedo * (NdotL + ambient) + specular.xxx;
         finalColor = (finalColor * (2.51f * finalColor + 0.03f)) / (finalColor * (2.43f * finalColor + 0.59f) + 0.14f);
     }
 
