@@ -16,6 +16,12 @@ struct PMXMaterial {
     UINT indexCount;
 };
 
+struct PMXBone {
+    std::wstring name;          
+    int parentIndex;            
+    DirectX::XMFLOAT3 position; 
+};
+
 class PMXLoader {
 public:
     PMXLoader() = default;
@@ -27,8 +33,12 @@ public:
     const std::vector<uint32_t>& GetIndices() const { return m_indices; }
     const std::vector<PMXMaterial>& GetMaterials() const { return m_materials; }
 
+    const std::vector<PMXBone>& GetBones() const { return m_bones; }
+
 private:
     std::vector<PMXVertex> m_vertices;
     std::vector<uint32_t> m_indices;
     std::vector<PMXMaterial> m_materials;
+
+    std::vector<PMXBone> m_bones;
 };

@@ -6,7 +6,7 @@ cbuffer SceneConstantBuffer : register(b0)
 
 cbuffer BoneConstantBuffer : register(b1)
 {
-    float4x4 g_BoneTransforms[256];
+    float4x4 g_BoneTransforms[1024];
 };
 
 struct PSInput
@@ -38,46 +38,44 @@ PSInput VSMain(
 {
     PSInput result;
     
-    //float4 localPos = float4(position, 1.0f);
-    //float4 skinnedPos = float4(0.0f, 0.0f, 0.0f, 0.0f);
-    //float3 skinnedNormal = float3(0.0f, 0.0f, 0.0f);
+    float4 localPos = float4(position, 1.0f);
+    float4 skinnedPos = float4(0.0f, 0.0f, 0.0f, 0.0f);
+    float3 skinnedNormal = float3(0.0f, 0.0f, 0.0f);
     
-    //// check if has bones weight
-    //float totalWeight = boneWeights.x + boneWeights.y + boneWeights.z + boneWeights.w;
+    float totalWeight = boneWeights.x + boneWeights.y + boneWeights.z + boneWeights.w;
     
-    //if (totalWeight > 0.01f)
-    //{
-    //    // 4-bones Linear Blend Skinning
-    //    for (int i = 0; i < 4; ++i)
-    //    {
-    //        skinnedPos += boneWeights[i] * mul(localPos, g_BoneTransforms[boneIndices[i]]);
-    //        skinnedNormal += boneWeights[i] * mul(float4(normal, 0.0f), g_BoneTransforms[boneIndices[i]]).xyz;
-    //    }
-    //    position = skinnedPos.xyz;
-    //    normal = normalize(skinnedNormal);
-    //    result.isCharacter = 1.0f;
-    //}
-    //else
-    //{
-    //    result.isCharacter = 0.0f; // static scene objs
-    //}
-    
-    //result.position = mul(float4(position, 1.0f), mvpMatrix);
-    //result.worldPos = mul(float4(position, 1.0f), modelMatrix).xyz;
-    //result.normal = normalize(mul(float4(normal, 0.0f), modelMatrix).xyz);
-    //result.uv = uv;
-    //return result;
-    
-    if (boneWeights.w > 0.9f)
+    if (totalWeight > 0.01f)
     {
+        // 4-bones Linear Blend Skinning
+        for (int i = 0; i < 4; ++i)
+        {
+    // ðŸš¨ é˜²è­· 3ï¼šå¼·åˆ¶æŠŠ Bone ID é™åˆ¶åœ¨ 0~1023 ä¹‹é–“ï¼Œçµ•å°ä¸å…è¨±è¶Šç•Œè®€å–ï¼
+            uint safeBoneIdx = min(boneIndices[i], 1023);
+    
+            skinnedPos += boneWeights[i] * mul(localPos, g_BoneTransforms[safeBoneIdx]);
+            skinnedNormal += boneWeights[i] * mul(float4(normal, 0.0f), g_BoneTransforms[safeBoneIdx]).xyz;
+        }
+        
+        // ðŸŸ¢ GPU ç´šé‚„åŽŸï¼šæ”¾å¤§ 12 å€ï¼Œä¸¦ç¹ž Y è»¸æ—‹è½‰ 90 åº¦
+        float3 p = skinnedPos.xyz * 12.0f;
+        
+        float rad = -90.0f * (3.14159265f / 180.0f);
+        float c = cos(rad);
+        float s = sin(rad);
+        
+        // å¥—ç”¨æ—‹è½‰
+        position = float3(p.x * c + p.z * s, p.y, -p.x * s + p.z * c);
+        
+        float3 n = normalize(skinnedNormal);
+        normal = float3(n.x * c + n.z * s, n.y, -n.x * s + n.z * c);
+        
         result.isCharacter = 1.0f;
     }
     else
     {
-        result.isCharacter = 0.0f;
+        result.isCharacter = 0.0f; // Sponza å ´æ™¯
     }
     
-    // ª½±µ®M¥Î¼Ð·ÇÅÜ´«¯x°}¡A¬Ù¥h¥¼ªì©l¤Æªº°©Àf¯x°}¹Bºâ
     result.position = mul(float4(position, 1.0f), mvpMatrix);
     result.worldPos = mul(float4(position, 1.0f), modelMatrix).xyz;
     result.normal = normalize(mul(float4(normal, 0.0f), modelMatrix).xyz);

@@ -129,7 +129,9 @@
     <ClInclude Include="AssimpLoader.h" />
     <ClInclude Include="Camera.h" />
     <ClInclude Include="InputManager.h" />
+    <ClInclude Include="MMDAnimator.h" />
     <ClInclude Include="PMXLoader.h" />
+    <ClInclude Include="VMDLoader.h" />
     <ClInclude Include="Win32Application.h" />
     <ClInclude Include="D3D12HelloTexture.h" />
     <ClInclude Include="DXSample.h" />
@@ -139,7 +141,9 @@
   <ItemGroup>
     <ClCompile Include="AssimpLoader.cpp" />
     <ClCompile Include="Camera.cpp" />
+    <ClCompile Include="MMDAnimator.cpp" />
     <ClCompile Include="PMXLoader.cpp" />
+    <ClCompile Include="VMDLoader.cpp" />
     <ClCompile Include="Win32Application.cpp" />
     <ClCompile Include="D3D12HelloTexture.cpp" />
     <ClCompile Include="DXSample.cpp" />

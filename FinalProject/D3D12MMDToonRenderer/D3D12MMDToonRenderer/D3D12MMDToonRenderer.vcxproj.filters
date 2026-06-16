@@ -19,6 +19,12 @@
     <Filter Include="Source Files\ModelLoader">
       <UniqueIdentifier>{bd23bfad-ed06-4d99-ba59-ddae9a844c1b}</UniqueIdentifier>
     </Filter>
+    <Filter Include="Header Files\ModelLoader\MMD">
+      <UniqueIdentifier>{59ed2fed-632e-48aa-8ee0-02c78968a774}</UniqueIdentifier>
+    </Filter>
+    <Filter Include="Source Files\ModelLoader\MMD">
+      <UniqueIdentifier>{8fc1fe99-c64e-43a8-9e5e-8ca6379717d8}</UniqueIdentifier>
+    </Filter>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="stdafx.h">
@@ -46,7 +52,13 @@
       <Filter>Header Files\ModelLoader</Filter>
     </ClInclude>
     <ClInclude Include="PMXLoader.h">
-      <Filter>Header Files\ModelLoader</Filter>
+      <Filter>Header Files\ModelLoader\MMD</Filter>
+    </ClInclude>
+    <ClInclude Include="VMDLoader.h">
+      <Filter>Header Files\ModelLoader\MMD</Filter>
+    </ClInclude>
+    <ClInclude Include="MMDAnimator.h">
+      <Filter>Header Files\ModelLoader\MMD</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -72,7 +84,13 @@
       <Filter>Source Files\ModelLoader</Filter>
     </ClCompile>
     <ClCompile Include="PMXLoader.cpp">
-      <Filter>Source Files\ModelLoader</Filter>
+      <Filter>Source Files\ModelLoader\MMD</Filter>
+    </ClCompile>
+    <ClCompile Include="VMDLoader.cpp">
+      <Filter>Source Files\ModelLoader\MMD</Filter>
+    </ClCompile>
+    <ClCompile Include="MMDAnimator.cpp">
+      <Filter>Source Files\ModelLoader\MMD</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>

@@ -14,6 +14,7 @@
 #include "InputManager.h"
 #include "AssimpLoader.h"
 #include "PMXLoader.h"
+#include "VMDLoader.h"
 #include <DDSTextureLoader.h>
 #include <locale>
 #include <codecvt>
@@ -212,24 +213,13 @@ void D3D12HelloTexture::LoadAssets()
             const auto& pv = pmxVerts[idx];
             Vertex v = {};
 
-            float sx = pv.position.x * pmxScale;
-            float sy = (pv.position.y * pmxScale) + pmxOffsetY;
-            float sz = pv.position.z * pmxScale;
-
-            // 2. 進行 Y 軸旋轉 (套用標準 2D 旋轉矩陣公式)
-            v.position.x = sx * cosY - sz * sinY;
-            v.position.y = sy;
-            v.position.z = sx * sinY + sz * cosY;
-
-            v.normal.x = pv.normal.x * cosY - pv.normal.z * sinY;
-            v.normal.y = pv.normal.y;
-            v.normal.z = pv.normal.x * sinY + pv.normal.z * cosY;
-
+            v.position = pv.position;
+            v.normal = pv.normal;
             v.uv = pv.uv;
-            /*memcpy(v.boneIndices, pv.boneIndices, sizeof(uint32_t) * 4);
-            memcpy(v.boneWeights, pv.boneWeights, sizeof(float) * 4);*/
 
-            v.boneWeights[3] = 0.999f; //temp
+            // 🟢 解除封印：把真實的骨架 ID 與權重塞給 GPU
+            memcpy(v.boneIndices, pv.boneIndices, sizeof(uint32_t) * 4);
+            memcpy(v.boneWeights, pv.boneWeights, sizeof(float) * 4);
 
             m_vertices.push_back(v);
         }
@@ -246,6 +236,12 @@ void D3D12HelloTexture::LoadAssets()
             m_meshes.push_back(mesh);
             currentVertexOffset += mat.indexCount;
         }
+    }
+
+    VMDLoader vmdLoader;
+    if (vmdLoader.Load(L"Models/MMD/Anims/rubychan_no_mouth.vmd"))
+    {
+        m_animator.Initialize(pmxLoader.GetBones(), vmdLoader.GetBoneAnimations());
     }
 
     // Create the root signature.
@@ -320,7 +316,6 @@ void D3D12HelloTexture::LoadAssets()
 
         // Describe and create the graphics pipeline state object (PSO).
         D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
-        psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
         psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
 
         psoDesc.BlendState.RenderTarget[0].BlendEnable = FALSE;
@@ -337,7 +332,9 @@ void D3D12HelloTexture::LoadAssets()
         psoDesc.VS = CD3DX12_SHADER_BYTECODE(vsMain->GetBufferPointer(), vsMain->GetBufferSize());
         psoDesc.PS = CD3DX12_SHADER_BYTECODE(psMain->GetBufferPointer(), psMain->GetBufferSize()); 
         psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-        //psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+        psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
+
+        psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
         psoDesc.DepthStencilState.DepthEnable = TRUE;
         psoDesc.DepthStencilState.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
         psoDesc.DepthStencilState.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
@@ -399,7 +396,7 @@ void D3D12HelloTexture::LoadAssets()
 
     ThrowIfFailed(m_constantBuffer->Map(0, nullptr, reinterpret_cast<void**>(&m_pCbvDataBegin)));
 
-    const UINT boneBufferSize = sizeof(DirectX::XMMATRIX) * 256;
+    const UINT boneBufferSize = sizeof(DirectX::XMMATRIX) * 1024;
     ThrowIfFailed(m_device->CreateCommittedResource(
         &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
         D3D12_HEAP_FLAG_NONE,
@@ -715,6 +712,16 @@ void D3D12HelloTexture::OnUpdate()
 
     memcpy(m_pCbvDataBegin, &cbData, sizeof(ConstantBufferData));
     
+    // 1. 推進動畫時間
+    m_animator.Update(m_deltaTime);
+
+    // 2. 將 256 個骨頭矩陣 Copy 給 b1 (m_boneConstantBuffer)
+    if (m_pBoneDataBegin != nullptr)
+    {
+        const auto& skinningMatrices = m_animator.GetSkinningMatrices();
+        memcpy(m_pBoneDataBegin, skinningMatrices.data(), sizeof(DirectX::XMMATRIX) * 1024);
+    }
+
     InputManager::Get().EndFrame();
 }
 

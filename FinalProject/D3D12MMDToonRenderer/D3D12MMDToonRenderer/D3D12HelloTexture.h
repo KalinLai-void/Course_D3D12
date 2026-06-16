@@ -13,6 +13,7 @@
 
 #include "Camera.h"
 #include "DXSample.h"
+#include "MMDAnimator.h"
 #include <chrono>
 #include <assimp/Importer.hpp>
 #include <assimp/scene.h>
@@ -110,6 +111,8 @@ private:
     // bone
     ComPtr<ID3D12Resource> m_boneConstantBuffer;
     UINT8* m_pBoneDataBegin = nullptr;
+
+    MMDAnimator m_animator;
 
     // App resources.
     ComPtr<ID3D12Resource> m_vertexBuffer;
