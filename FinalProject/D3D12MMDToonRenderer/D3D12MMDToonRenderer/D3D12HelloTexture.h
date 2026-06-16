@@ -126,6 +126,39 @@ private:
     ComPtr<ID3D12Resource> m_ssaoRawTexture;
     ComPtr<ID3D12DescriptorHeap> m_ssaoRtvHeap;
 
+    static const UINT SSAO_KERNEL_SIZE = 16;
+
+    struct SsaoConstants
+    {
+        DirectX::XMFLOAT4 samples[SSAO_KERNEL_SIZE];
+
+        DirectX::XMFLOAT4X4 view;
+        DirectX::XMFLOAT4X4 projection;
+
+        // x = radius
+        // y = bias
+        // z = intensity
+        // w = enabled
+        DirectX::XMFLOAT4 parameters;
+    };
+
+    // Render mode 4 always displays SSAO. This flag only controls whether
+    // SSAO is applied outside the SSAO debug view (for effect comparison).
+    bool m_enableSsao = true;
+
+    float m_ssaoRadius = 0.25f;
+    float m_ssaoBias = 0.030f;
+    float m_ssaoIntensity = 1.80f;
+
+    SsaoConstants m_ssaoConstants = {};
+
+    ComPtr<ID3D12DescriptorHeap> m_ssaoSrvHeap;
+    ComPtr<ID3D12RootSignature> m_ssaoRootSignature;
+    ComPtr<ID3D12PipelineState> m_ssaoPipelineState;
+
+    ComPtr<ID3D12Resource> m_ssaoConstantBuffer;
+    UINT8* m_pSsaoConstantData = nullptr;
+
     // Pipeline objects.
     CD3DX12_VIEWPORT m_viewport;
     CD3DX12_RECT m_scissorRect;
@@ -193,6 +226,8 @@ private:
 
     void CreateGBuffers();
     void CreateSSAOResources();
+    void CreateSSAOPipeline();
+    void UpdateSSAOConstants();
 
     void HandleInput();
 };

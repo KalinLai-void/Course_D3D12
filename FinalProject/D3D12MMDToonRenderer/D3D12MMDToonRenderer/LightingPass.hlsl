@@ -36,22 +36,24 @@ PSInputLight VSLighting(uint vertexID : SV_VertexID)
 
 float4 PSLighting(PSInputLight input) : SV_TARGET
 {
-    // SSAO Debug Mode
-    if (renderMode == 4)
-    {
-        float ao =
-            g_ssaoTexture.Sample(
-                g_sampler,
-                input.uv
-            ).r;
+    // SSAO
+    float ao = 0.0f;
+    uint texWidth, texHeight;
+    g_ssaoTexture.GetDimensions(texWidth, texHeight);
+    float2 texelSize = float2(1.0f / (float) texWidth, 1.0f / (float) texHeight);
 
-        return float4(
-            ao,
-            ao,
-            ao,
-            1.0f
-        );
+    float blurSamples = 0.0f;
+        // 採樣周圍 5x5 的像素來平均雜訊
+    for (int x = -2; x <= 2; ++x)
+    {
+        for (int y = -2; y <= 2; ++y)
+        {
+            float2 offset = float2(x, y) * texelSize;
+            ao += g_ssaoTexture.SampleLevel(g_sampler, input.uv + offset, 0).r;
+            blurSamples += 1.0f;
+        }
     }
+    ao /= blurSamples; // 算出平滑的遮蔽值
 
     float4 positionSample =
         g_gbufferPos.Sample(
@@ -134,7 +136,7 @@ float4 PSLighting(PSInputLight input) : SV_TARGET
     else
     {
         // 【寫實風格 (Blinn-Phong) - 用於 Sponza】
-        float ambient = 0.28f;
+        float ambient = 0.28f * ao;
         float NdotL = max(dot(normal, L), 0.0f);
         float specular = 0.0f;
         if (NdotL > 0.0f)
@@ -170,6 +172,10 @@ float4 PSLighting(PSInputLight input) : SV_TARGET
     else if (renderMode == 2) // Albedo
     {
         return float4(albedo, 1.0f);
+    }
+    else if (renderMode == 4)
+    {
+        return float4(ao, ao, ao, 1.0f);
     }
     else // Final Color
     {

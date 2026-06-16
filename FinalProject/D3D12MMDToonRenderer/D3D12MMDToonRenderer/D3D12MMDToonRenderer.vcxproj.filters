@@ -101,6 +101,9 @@
     <None Include="GeometryPass.hlsl">
       <Filter>Assets\Shaders</Filter>
     </None>
+    <None Include="SSAOPass.hlsl">
+      <Filter>Assets\Shaders</Filter>
+    </None>
   </ItemGroup>
   <ItemGroup>
     <ResourceCompile Include="D3D12MMDToonRenderer.rc" />

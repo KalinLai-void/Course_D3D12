@@ -23,6 +23,7 @@
 #include <algorithm>
 #include <cwctype>
 #include <cwchar>
+#include <random>
 
 extern "C" { __declspec(dllexport) extern const UINT D3D12SDKVersion = 619; }
 extern "C" { __declspec(dllexport) extern const char* D3D12SDKPath = u8".\\D3D12\\"; }
@@ -230,6 +231,7 @@ void D3D12HelloTexture::LoadAssets()
 {
     CreateGBuffers();
     CreateSSAOResources();
+    CreateSSAOPipeline();
     //LoadModel(L"sponza/sponza.obj");
 
     AssimpLoader assimpLoader;
@@ -1051,6 +1053,8 @@ void D3D12HelloTexture::OnUpdate()
 
     memcpy(m_pCbvDataBegin, &cbData, sizeof(ConstantBufferData));
     
+    UpdateSSAOConstants();
+
     // MMD Animator
     m_animator.Update(m_deltaTime);
 
@@ -1212,11 +1216,10 @@ void D3D12HelloTexture::PopulateCommandList()
     m_commandList->ResourceBarrier(3, barriers);
 
     // ==========================================
-// Pass 2: SSAO Step 1
-// 暫時只將 AO Texture 清成白色
-// ==========================================
+    // Pass 2: SSAO
+    // ==========================================
 
-// SSAO：Pixel Shader Resource -> Render Target
+    // SSAO：Pixel Shader Resource -> Render Target
     D3D12_RESOURCE_BARRIER ssaoToRenderTarget =
         CD3DX12_RESOURCE_BARRIER::Transition(
             m_ssaoRawTexture.Get(),
@@ -1258,6 +1261,75 @@ void D3D12HelloTexture::PopulateCommandList()
         nullptr
     );
 
+    D3D12_VIEWPORT ssaoViewport = {};
+    ssaoViewport.TopLeftX = 0.0f;
+    ssaoViewport.TopLeftY = 0.0f;
+    ssaoViewport.Width =
+        static_cast<float>(m_ssaoWidth);
+    ssaoViewport.Height =
+        static_cast<float>(m_ssaoHeight);
+    ssaoViewport.MinDepth = 0.0f;
+    ssaoViewport.MaxDepth = 1.0f;
+
+    D3D12_RECT ssaoScissor = {};
+    ssaoScissor.left = 0;
+    ssaoScissor.top = 0;
+    ssaoScissor.right =
+        static_cast<LONG>(m_ssaoWidth);
+    ssaoScissor.bottom =
+        static_cast<LONG>(m_ssaoHeight);
+
+    m_commandList->RSSetViewports(
+        1,
+        &ssaoViewport
+    );
+
+    m_commandList->RSSetScissorRects(
+        1,
+        &ssaoScissor
+    );
+
+    m_commandList->SetPipelineState(
+        m_ssaoPipelineState.Get()
+    );
+
+    m_commandList->SetGraphicsRootSignature(
+        m_ssaoRootSignature.Get()
+    );
+
+    ID3D12DescriptorHeap* ssaoHeaps[] =
+    {
+        m_ssaoSrvHeap.Get()
+    };
+
+    m_commandList->SetDescriptorHeaps(
+        _countof(ssaoHeaps),
+        ssaoHeaps
+    );
+
+    m_commandList->SetGraphicsRootDescriptorTable(
+        0,
+        m_ssaoSrvHeap
+        ->GetGPUDescriptorHandleForHeapStart()
+    );
+
+    m_commandList->SetGraphicsRootConstantBufferView(
+        1,
+        m_ssaoConstantBuffer
+        ->GetGPUVirtualAddress()
+    );
+
+    m_commandList->IASetPrimitiveTopology(
+        D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST
+    );
+
+    m_commandList->DrawInstanced(
+        3,
+        1,
+        0,
+        0
+    );
+
     // SSAO：Render Target -> Pixel Shader Resource
     D3D12_RESOURCE_BARRIER ssaoToShaderResource =
         CD3DX12_RESOURCE_BARRIER::Transition(
@@ -1269,6 +1341,16 @@ void D3D12HelloTexture::PopulateCommandList()
     m_commandList->ResourceBarrier(
         1,
         &ssaoToShaderResource
+    );
+
+    m_commandList->RSSetViewports(
+        1,
+        &m_viewport
+    );
+
+    m_commandList->RSSetScissorRects(
+        1,
+        &m_scissorRect
     );
 
     // let screen (BackBuffer) as Render Target
@@ -1348,11 +1430,16 @@ void D3D12HelloTexture::PopulateCommandList()
             L"PMX: %ls\n"
             L"Render Mode: %ls\n"
             L"Tone Mapping: ACES | "
-            L"Exposure: %.2f",
+            L"Exposure: %.2f\n"
+            L"SSAO Apply: %ls | Radius: %.3f | Bias: %.3f | Intensity: %.2f",
             m_currentFps,
             m_showCharacter ? L"ON" : L"OFF",
             modeName,
-            currentExposure
+            currentExposure,
+            m_enableSsao ? L"ON" : L"OFF",
+            m_ssaoRadius,
+            m_ssaoBias,
+            m_ssaoIntensity
         );
 
         ID3D12DescriptorHeap* uiHeaps[] =
@@ -1497,8 +1584,10 @@ void D3D12HelloTexture::CreateGBuffers() {
 
 void D3D12HelloTexture::CreateSSAOResources()
 {
-    m_ssaoWidth = m_width;
-    m_ssaoHeight = m_height;
+    // Half-resolution AO leaves performance headroom for the later
+    // bilateral blur pass.
+    m_ssaoWidth = (m_width + 1u) / 2u;
+    m_ssaoHeight = (m_height + 1u) / 2u;
 
     // AO：
     // 1.0 = 無遮蔽
@@ -1568,6 +1657,399 @@ void D3D12HelloTexture::CreateSSAOResources()
     );
 }
 
+void D3D12HelloTexture::CreateSSAOPipeline()
+{
+    // ==========================================
+    // SSAO SRV Heap
+    // t0 = Normal
+    // t1 = World Position
+    // ==========================================
+    D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc = {};
+    srvHeapDesc.NumDescriptors = 2;
+    srvHeapDesc.Type =
+        D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+    srvHeapDesc.Flags =
+        D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+
+    ThrowIfFailed(
+        m_device->CreateDescriptorHeap(
+            &srvHeapDesc,
+            IID_PPV_ARGS(&m_ssaoSrvHeap)
+        )
+    );
+
+    const UINT descriptorSize =
+        m_device->GetDescriptorHandleIncrementSize(
+            D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV
+        );
+
+    CD3DX12_CPU_DESCRIPTOR_HANDLE handle(
+        m_ssaoSrvHeap
+        ->GetCPUDescriptorHandleForHeapStart()
+    );
+
+    // t0：Normal
+    D3D12_SHADER_RESOURCE_VIEW_DESC normalSrv = {};
+    normalSrv.Shader4ComponentMapping =
+        D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    normalSrv.Format =
+        DXGI_FORMAT_R16G16B16A16_FLOAT;
+    normalSrv.ViewDimension =
+        D3D12_SRV_DIMENSION_TEXTURE2D;
+    normalSrv.Texture2D.MipLevels = 1;
+
+    m_device->CreateShaderResourceView(
+        m_gBufferTextures[GBUFFER_NORMAL].Get(),
+        &normalSrv,
+        handle
+    );
+
+    handle.Offset(1, descriptorSize);
+
+    // t1：Position
+    D3D12_SHADER_RESOURCE_VIEW_DESC positionSrv = {};
+    positionSrv.Shader4ComponentMapping =
+        D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+    positionSrv.Format =
+        DXGI_FORMAT_R32G32B32A32_FLOAT;
+    positionSrv.ViewDimension =
+        D3D12_SRV_DIMENSION_TEXTURE2D;
+    positionSrv.Texture2D.MipLevels = 1;
+
+    m_device->CreateShaderResourceView(
+        m_gBufferTextures[GBUFFER_POSITION].Get(),
+        &positionSrv,
+        handle
+    );
+
+    // ==========================================
+    // SSAO Root Signature
+    // ==========================================
+    D3D12_FEATURE_DATA_ROOT_SIGNATURE featureData = {};
+    featureData.HighestVersion =
+        D3D_ROOT_SIGNATURE_VERSION_1_1;
+
+    if (FAILED(
+        m_device->CheckFeatureSupport(
+            D3D12_FEATURE_ROOT_SIGNATURE,
+            &featureData,
+            sizeof(featureData)
+        )))
+    {
+        featureData.HighestVersion =
+            D3D_ROOT_SIGNATURE_VERSION_1_0;
+    }
+
+    CD3DX12_DESCRIPTOR_RANGE1 range;
+    range.Init(
+        D3D12_DESCRIPTOR_RANGE_TYPE_SRV,
+        2,
+        0,
+        0,
+        D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC
+    );
+
+    CD3DX12_ROOT_PARAMETER1 parameters[2];
+
+    parameters[0].InitAsDescriptorTable(
+        1,
+        &range,
+        D3D12_SHADER_VISIBILITY_PIXEL
+    );
+
+    parameters[1].InitAsConstantBufferView(
+        0,
+        0,
+        D3D12_ROOT_DESCRIPTOR_FLAG_NONE,
+        D3D12_SHADER_VISIBILITY_PIXEL
+    );
+
+    D3D12_STATIC_SAMPLER_DESC sampler = {};
+    sampler.Filter =
+        D3D12_FILTER_MIN_MAG_MIP_POINT;
+    sampler.AddressU =
+        D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.AddressV =
+        D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.AddressW =
+        D3D12_TEXTURE_ADDRESS_MODE_CLAMP;
+    sampler.ComparisonFunc =
+        D3D12_COMPARISON_FUNC_NEVER;
+    sampler.MaxLOD =
+        D3D12_FLOAT32_MAX;
+    sampler.ShaderRegister = 0;
+    sampler.ShaderVisibility =
+        D3D12_SHADER_VISIBILITY_PIXEL;
+
+    CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC rootDesc;
+
+    rootDesc.Init_1_1(
+        _countof(parameters),
+        parameters,
+        1,
+        &sampler,
+        D3D12_ROOT_SIGNATURE_FLAG_NONE
+    );
+
+    ComPtr<ID3DBlob> signature;
+    ComPtr<ID3DBlob> rootError;
+
+    ThrowIfFailed(
+        D3DX12SerializeVersionedRootSignature(
+            &rootDesc,
+            featureData.HighestVersion,
+            &signature,
+            &rootError
+        )
+    );
+
+    ThrowIfFailed(
+        m_device->CreateRootSignature(
+            0,
+            signature->GetBufferPointer(),
+            signature->GetBufferSize(),
+            IID_PPV_ARGS(&m_ssaoRootSignature)
+        )
+    );
+
+    // ==========================================
+    // Compile SSAO Shader
+    // ==========================================
+    ComPtr<ID3DBlob> vertexShader;
+    ComPtr<ID3DBlob> pixelShader;
+    ComPtr<ID3DBlob> shaderError;
+
+    HRESULT hr = D3DCompileFromFile(
+        L"SSAOPass.hlsl",
+        nullptr,
+        nullptr,
+        "VSMain",
+        "vs_5_0",
+        0,
+        0,
+        &vertexShader,
+        &shaderError
+    );
+
+    if (FAILED(hr))
+    {
+        if (shaderError)
+        {
+            OutputDebugStringA(
+                static_cast<const char*>(
+                    shaderError->GetBufferPointer()
+                    )
+            );
+        }
+
+        ThrowIfFailed(hr);
+    }
+
+    shaderError.Reset();
+
+    hr = D3DCompileFromFile(
+        L"SSAOPass.hlsl",
+        nullptr,
+        nullptr,
+        "PSMain",
+        "ps_5_0",
+        0,
+        0,
+        &pixelShader,
+        &shaderError
+    );
+
+    if (FAILED(hr))
+    {
+        if (shaderError)
+        {
+            OutputDebugStringA(
+                static_cast<const char*>(
+                    shaderError->GetBufferPointer()
+                    )
+            );
+        }
+
+        ThrowIfFailed(hr);
+    }
+
+    // ==========================================
+    // SSAO PSO
+    // ==========================================
+    D3D12_GRAPHICS_PIPELINE_STATE_DESC pso = {};
+
+    pso.pRootSignature =
+        m_ssaoRootSignature.Get();
+
+    pso.VS =
+        CD3DX12_SHADER_BYTECODE(
+            vertexShader.Get()
+        );
+
+    pso.PS =
+        CD3DX12_SHADER_BYTECODE(
+            pixelShader.Get()
+        );
+
+    pso.BlendState =
+        CD3DX12_BLEND_DESC(
+            D3D12_DEFAULT
+        );
+
+    pso.RasterizerState =
+        CD3DX12_RASTERIZER_DESC(
+            D3D12_DEFAULT
+        );
+
+    pso.RasterizerState.CullMode =
+        D3D12_CULL_MODE_NONE;
+
+    pso.DepthStencilState.DepthEnable = FALSE;
+    pso.DepthStencilState.StencilEnable = FALSE;
+
+    pso.SampleMask = UINT_MAX;
+
+    pso.PrimitiveTopologyType =
+        D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+
+    pso.NumRenderTargets = 1;
+    pso.RTVFormats[0] =
+        DXGI_FORMAT_R8_UNORM;
+
+    pso.SampleDesc.Count = 1;
+
+    ThrowIfFailed(
+        m_device->CreateGraphicsPipelineState(
+            &pso,
+            IID_PPV_ARGS(&m_ssaoPipelineState)
+        )
+    );
+
+    // ==========================================
+    // SSAO Constant Buffer
+    // ==========================================
+    const UINT constantBufferSize =
+        (sizeof(SsaoConstants) + 255u) &
+        ~255u;
+
+    CD3DX12_HEAP_PROPERTIES uploadHeap(
+        D3D12_HEAP_TYPE_UPLOAD
+    );
+
+    D3D12_RESOURCE_DESC bufferDesc =
+        CD3DX12_RESOURCE_DESC::Buffer(
+            constantBufferSize
+        );
+
+    ThrowIfFailed(
+        m_device->CreateCommittedResource(
+            &uploadHeap,
+            D3D12_HEAP_FLAG_NONE,
+            &bufferDesc,
+            D3D12_RESOURCE_STATE_GENERIC_READ,
+            nullptr,
+            IID_PPV_ARGS(&m_ssaoConstantBuffer)
+        )
+    );
+
+    ThrowIfFailed(
+        m_ssaoConstantBuffer->Map(
+            0,
+            nullptr,
+            reinterpret_cast<void**>(
+                &m_pSsaoConstantData
+                )
+        )
+    );
+
+    // ==========================================
+    // Generate Hemisphere Kernel
+    // ==========================================
+    std::mt19937 randomGenerator(1337u);
+
+    std::uniform_real_distribution<float>
+        random01(0.0f, 1.0f);
+
+    for (UINT i = 0;
+        i < SSAO_KERNEL_SIZE;
+        ++i)
+    {
+        XMVECTOR sample =
+            XMVectorSet(
+                random01(randomGenerator) * 2.0f - 1.0f,
+                random01(randomGenerator) * 2.0f - 1.0f,
+                random01(randomGenerator),
+                0.0f
+            );
+
+        sample =
+            XMVector3Normalize(sample);
+
+        sample =
+            XMVectorScale(
+                sample,
+                random01(randomGenerator)
+            );
+
+        float scale =
+            static_cast<float>(i) /
+            static_cast<float>(
+                SSAO_KERNEL_SIZE - 1
+                );
+
+        scale =
+            0.1f +
+            0.9f * scale * scale;
+
+        sample =
+            XMVectorScale(sample, scale);
+
+        XMStoreFloat4(
+            &m_ssaoConstants.samples[i],
+            sample
+        );
+    }
+}
+
+void D3D12HelloTexture::UpdateSSAOConstants()
+{
+    XMMATRIX view =
+        Camera::Get().GetViewMatrix();
+
+    XMMATRIX projection =
+        Camera::Get().GetProjectionMatrix();
+
+    XMStoreFloat4x4(
+        &m_ssaoConstants.view,
+        XMMatrixTranspose(view)
+    );
+
+    XMStoreFloat4x4(
+        &m_ssaoConstants.projection,
+        XMMatrixTranspose(projection)
+    );
+
+    // SSAO debug mode must always show the calculated result.
+    // Outside debug mode, C can still enable/disable SSAO for comparison.
+    const bool calculateSsao =
+        (m_renderMode == 4) ||
+        m_enableSsao;
+
+    m_ssaoConstants.parameters =
+        XMFLOAT4(
+            m_ssaoRadius,
+            m_ssaoBias,
+            m_ssaoIntensity,
+            calculateSsao ? 1.0f : 0.0f
+        );
+
+    memcpy(
+        m_pSsaoConstantData,
+        &m_ssaoConstants,
+        sizeof(SsaoConstants)
+    );
+}
+
 void D3D12HelloTexture::HandleInput()
 {
     auto& input = InputManager::Get();
@@ -1604,5 +2086,58 @@ void D3D12HelloTexture::HandleInput()
     // If the large white object disappears, it was the PMX model, not Sponza.
     if (input.IsKeyJustPressed('X')) {
         m_showCharacter = !m_showCharacter;
+    }
+
+    // C only toggles whether SSAO is applied outside Render Mode 4.
+    // Render Mode 4 always shows the SSAO result directly.
+    if (input.IsKeyJustPressed('C'))
+    {
+        m_enableSsao = !m_enableSsao;
+    }
+
+    // Adjustable parameters required for the assignment:
+    // [ / ] : radius
+    // ; / ' : bias
+    // , / . : intensity
+    if (input.IsKeyJustPressed(VK_OEM_4))
+    {
+        m_ssaoRadius -= 0.025f;
+        if (m_ssaoRadius < 0.05f)
+            m_ssaoRadius = 0.05f;
+    }
+
+    if (input.IsKeyJustPressed(VK_OEM_6))
+    {
+        m_ssaoRadius += 0.025f;
+        if (m_ssaoRadius > 1.00f)
+            m_ssaoRadius = 1.00f;
+    }
+
+    if (input.IsKeyJustPressed(VK_OEM_1))
+    {
+        m_ssaoBias -= 0.005f;
+        if (m_ssaoBias < 0.0f)
+            m_ssaoBias = 0.0f;
+    }
+
+    if (input.IsKeyJustPressed(VK_OEM_7))
+    {
+        m_ssaoBias += 0.005f;
+        if (m_ssaoBias > 0.20f)
+            m_ssaoBias = 0.20f;
+    }
+
+    if (input.IsKeyJustPressed(VK_OEM_COMMA))
+    {
+        m_ssaoIntensity -= 0.10f;
+        if (m_ssaoIntensity < 0.10f)
+            m_ssaoIntensity = 0.10f;
+    }
+
+    if (input.IsKeyJustPressed(VK_OEM_PERIOD))
+    {
+        m_ssaoIntensity += 0.10f;
+        if (m_ssaoIntensity > 5.00f)
+            m_ssaoIntensity = 5.00f;
     }
 }
