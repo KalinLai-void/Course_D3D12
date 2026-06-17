@@ -13,3 +13,6 @@ These are the homeworks of the master course "High-performance Real-time 3D Rend
 - [Final Project - MMD Toon Renderer](./FinalProject/)
   - 原定會有 Assignment 2 ~ 4 的作業，但上課有點 delay 到+時間因素，老師動態調整，只有做 Assignment 1。
   - 而 FinalProject則是Base on [Assignment 1](./Assignment1%20-%20Deferred%20Renderer/) 繼續做。
+  
+>[!Note]
+> 因為只是作業，沒有特別維護程式碼品質，所以可能有點小亂@@
