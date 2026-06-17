@@ -10,6 +10,7 @@
 > 若遇到透明貼圖，有在 Shader 中額外做 Alpha Clipping 處理。
 
 ## Results
+> 後來才注意到本專案之模型有些破損問題，後續在 [Final Project](../FinalProject/) 中有修正。
 ### Final Color (最終合成之光照結果)
 ![](imgs/Final.png)
 ### Depth (深度圖)
