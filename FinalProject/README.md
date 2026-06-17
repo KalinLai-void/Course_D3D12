@@ -92,7 +92,7 @@ Back Buffer
 
 $$
 \mathbf{F} =
-\operatorname{normalize}
+\mathrm{normalize}
 \begin{bmatrix}
 \cos\psi\cos\theta \\
 \sin\theta \\
@@ -161,7 +161,7 @@ $$
 模型貼圖使用相對於 PMX 檔案所在資料夾的路徑。Geometry Pass 會依材質的 `opacityMode` 決定是否執行 Alpha Test：
 
 $$
-\operatorname{clip}(\alpha - 0.5)
+\mathrm{clip}(\alpha - 0.5)
 $$
 
 當貼圖 Alpha 小於 `0.5` 時捨棄該 Pixel，用於角色頭髮、睫毛與其他 Cutout 區域。
@@ -202,7 +202,7 @@ $$
 
 $$
 \mathbf{q}(t) =
-\operatorname{Slerp}
+\mathrm{Slerp}
 (\mathbf{q}_0,\mathbf{q}_1,t)
 $$
 
@@ -278,7 +278,7 @@ $$
 
 $$
 \mathbf{n}_{skin} =
-\operatorname{normalize}
+\mathrm{normalize}
 \left(
 \sum_{i=0}^{3}
 \hat{w}_i
@@ -296,7 +296,7 @@ $$
 
 $$
 h =
-\operatorname{saturate}
+\mathrm{saturate}
 \left(
 \frac{\mathbf{N}\cdot\mathbf{L}}{2}
 +
@@ -308,13 +308,13 @@ $$
 
 $$
 r =
-\operatorname{smoothstep}
+\mathrm{smoothstep}
 (0.36, 0.58, h)
 $$
 
 $$
 D_{toon} =
-\operatorname{lerp}
+\mathrm{lerp}
 (0.18, 0.66, r)
 $$
 
@@ -322,10 +322,10 @@ $$
 
 $$
 V_{character} =
-\operatorname{lerp}
+\mathrm{lerp}
 \left(
 1,
-\operatorname{smoothstep}
+\mathrm{smoothstep}
 (0.10, 0.90, V_{shadow}),
 0.15
 \right)
@@ -371,7 +371,7 @@ Rim Light 先使用 View Direction 與 Normal 計算輪廓強度：
 $$
 R =
 1 -
-\operatorname{saturate}
+\mathrm{saturate}
 (\mathbf{N}\cdot\mathbf{V})
 $$
 
@@ -380,7 +380,7 @@ $$
 $$
 R_{intensity} =
 R^4
-\operatorname{saturate}
+\mathrm{saturate}
 (\mathbf{N}\cdot\mathbf{L})
 $$
 
@@ -389,7 +389,7 @@ $$
 $$
 R_{toon} =
 0.20
-\operatorname{smoothstep}
+\mathrm{smoothstep}
 (0.25, 0.45, R_{intensity})
 $$
 
@@ -402,7 +402,7 @@ $$
 為了避免透明頭髮、葉片或鏈條的透明區域寫入錯誤深度，Shadow Pass 亦使用 Diffuse Texture Alpha Test：
 
 $$
-\operatorname{clip}(\alpha - 0.5)
+\mathrm{clip}(\alpha - 0.5)
 $$
 
 #### Directional Light 方向
@@ -411,7 +411,7 @@ Directional Light 使用水平方位角 $\phi$ 與垂直仰角 $\theta$ 建立 S
 
 $$
 \mathbf{L} =
-\operatorname{normalize}
+\mathrm{normalize}
 \begin{bmatrix}
 \cos\phi\cos\theta \\
 \sin\theta \\
@@ -466,7 +466,7 @@ Receiver 端則依 Normal 與 Light Direction 的夾角使用 Normal Offset：
 $$
 g =
 1 -
-\operatorname{saturate}
+\mathrm{saturate}
 (\mathbf{N}\cdot\mathbf{L})
 $$
 
@@ -474,7 +474,7 @@ $$
 \mathbf{p}' =
 \mathbf{p} +
 \mathbf{N}
-\operatorname{lerp}
+\mathrm{lerp}
 (b_{min}, b_{max}, g)
 $$
 
@@ -508,7 +508,7 @@ Hard Shadow 僅進行一次 Depth Comparison：
 
 $$
 V =
-\operatorname{Compare}
+\mathrm{Compare}
 \left(
 D(\mathbf{u}),
 z_{reference}
@@ -522,7 +522,7 @@ V_{PCF}(\mathbf{u}) =
 \frac{1}{9}
 \sum_{x=-1}^{1}
 \sum_{y=-1}^{1}
-\operatorname{Compare}
+\mathrm{Compare}
 \left(
 D(\mathbf{u} + (x,y)\Delta\mathbf{u}),
 z_{reference}
@@ -586,7 +586,7 @@ scale_i
 \cdot
 r_i
 \cdot
-\operatorname{normalize}
+\mathrm{normalize}
 (\mathbf{s}_i)
 $$
 
@@ -599,7 +599,7 @@ $$
 $$
 \theta =
 2\pi
-\operatorname{Hash}
+\mathrm{Hash}
 (\mathbf{p}_{pixel}\bmod 4)
 $$
 
@@ -612,7 +612,7 @@ $$
 
 $$
 \mathbf{T} =
-\operatorname{normalize}
+\mathrm{normalize}
 \left(
 \mathbf{r} -
 \mathbf{N}
@@ -622,7 +622,7 @@ $$
 
 $$
 \mathbf{B} =
-\operatorname{normalize}
+\mathrm{normalize}
 (\mathbf{N}\times\mathbf{T})
 $$
 
@@ -668,7 +668,7 @@ $$
 
 $$
 w_i =
-\operatorname{smoothstep}
+\mathrm{smoothstep}
 \left(
 0,
 1,
@@ -693,7 +693,7 @@ Intensity 最後以冪次調整：
 
 $$
 AO =
-\operatorname{saturate}
+\mathrm{saturate}
 (AO_{raw})^{intensity}
 $$
 
@@ -748,7 +748,7 @@ $$
 本專案使用 ACES Approximation：
 
 $$
-\operatorname{ACES}(x) =
+\mathrm{ACES}(x) =
 \frac{
 x(2.51x+0.03)
 }{
@@ -763,7 +763,7 @@ Tone Mapping 後，再進行 Gamma Correction：
 $$
 \mathbf{C}_{display} =
 \max(
-\operatorname{ACES}(\mathbf{x}),
+\mathrm{ACES}(\mathbf{x}),
 0
 )^{\frac{1}{2.2}}
 $$
@@ -772,7 +772,7 @@ $$
 
 $$
 \mathbf{C}_{LDR} =
-\operatorname{saturate}
+\mathrm{saturate}
 (\mathbf{C}_{display})
 $$
 
