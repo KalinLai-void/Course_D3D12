@@ -1699,8 +1699,13 @@ void D3D12HelloTexture::PopulateCommandList()
 
     // ==========================================
     // Four-corner HUD / Text Overlay
-    // Must be drawn while the back buffer is still a render target.
     // SPACE toggles the complete HUD.
+    //
+    // Important:
+    // Each line is drawn as colored segments from the beginning.
+    // The old version first drew a complete white string and then drew the
+    // pressed key again in red. SpriteFont kerning/measurement caused that
+    // second copy to shift. This version never overlays duplicate glyphs.
     // ==========================================
     if (g_showHud)
     {
@@ -1733,72 +1738,6 @@ void D3D12HelloTexture::PopulateCommandList()
             break;
         }
 
-        wchar_t topLeftText[256] = {};
-        wchar_t topRightText[256] = {};
-        wchar_t bottomLeftText[320] = {};
-        wchar_t bottomRightText[384] = {};
-
-        // Top-left: performance and render state.
-        swprintf_s(
-            topLeftText,
-            _countof(topLeftText),
-            L"[SYSTEM]\n"
-            L"FPS: %.0f\n"
-            L"Render Mode [Z]: %ls\n"
-            L"PMX [X]: %ls\n"
-            L"HUD [SPACE]: ON",
-            m_currentFps,
-            modeName,
-            m_showCharacter ? L"ON" : L"OFF");
-
-        // Top-right: direct-light controls.
-        swprintf_s(
-            topRightText,
-            _countof(topRightText),
-            L"[LIGHTING]\n"
-            L"Direct Lights [J]: %ls\n"
-            L"Shadow Filter [F]: %ls\n"
-            L"Horizontal [H / K]\n"
-            L"Vertical [U / M]",
-            m_enableSceneLights
-                ? L"ON"
-                : L"OFF - Ambient only",
-            g_enablePcf
-                ? L"PCF 3x3"
-                : L"HARD 1x1");
-
-        // Bottom-left: camera controls.
-        swprintf_s(
-            bottomLeftText,
-            _countof(bottomLeftText),
-            L"[CAMERA]\n"
-            L"Move: [W / A / S / D]\n"
-            L"Up [E] / Down [Q]\n"
-            L"Look: Mouse\n"
-            L"Unlock Cursor: [ESC]\n"
-            L"Pan (Need Unlock): [Right Mouse]");
-
-        // Bottom-right: post-processing controls.
-        swprintf_s(
-            bottomRightText,
-            _countof(bottomRightText),
-            L"[POST PROCESS]\n"
-            L"Tone Mapping: ACES\n"
-            L"Exposure [UP / DOWN]: %.2f\n"
-            L"---------------\n"
-            L"SSAO [C]: %ls\n"
-            L"Radius: [ decrease | ] increase\n"
-            L"Value: %.3f\n"
-            L"Bias: ; decrease | ' increase\n"
-            L"Value: %.3f\n"
-            L"Intensity: , decrease | . increase\n"
-            L"Value: %.2f",
-            currentExposure,
-            m_enableSsao ? L"ON" : L"OFF",
-            m_ssaoRadius,
-            m_ssaoBias,
-            m_ssaoIntensity);
-
         ID3D12DescriptorHeap* uiHeaps[] =
         {
             m_uiDescriptorHeap->Heap()
@@ -1814,98 +1753,571 @@ void D3D12HelloTexture::PopulateCommandList()
         const float hudScale = 0.68f;
         const float margin = 14.0f;
         const float shadowOffset = 1.5f;
+        const float lineHeight =
+            static_cast<float>(
+                m_spriteFont->GetLineSpacing()) *
+            hudScale;
 
-        auto MeasureScaledText =
-            [&](const wchar_t* text)
+        auto& hudInput =
+            InputManager::Get();
+
+        typedef std::pair<std::wstring, bool> HudSegment;
+        typedef std::vector<HudSegment> HudLine;
+        typedef std::vector<HudLine> HudBlock;
+
+        auto MakeSegment =
+            [](const std::wstring& text,
+               bool highlighted)
         {
-            DirectX::XMFLOAT2 rawSize = {};
+            return HudSegment(
+                text,
+                highlighted);
+        };
+
+        wchar_t fpsText[32] = {};
+        wchar_t exposureText[32] = {};
+        wchar_t radiusText[32] = {};
+        wchar_t biasText[32] = {};
+        wchar_t intensityText[32] = {};
+
+        swprintf_s(
+            fpsText,
+            _countof(fpsText),
+            L"%.0f",
+            m_currentFps);
+
+        swprintf_s(
+            exposureText,
+            _countof(exposureText),
+            L"%.2f",
+            currentExposure);
+
+        swprintf_s(
+            radiusText,
+            _countof(radiusText),
+            L"%.3f",
+            m_ssaoRadius);
+
+        swprintf_s(
+            biasText,
+            _countof(biasText),
+            L"%.3f",
+            m_ssaoBias);
+
+        swprintf_s(
+            intensityText,
+            _countof(intensityText),
+            L"%.2f",
+            m_ssaoIntensity);
+
+        // ----------------------------------------------------------
+        // Build top-left block.
+        // ----------------------------------------------------------
+        HudBlock topLeftBlock;
+
+        topLeftBlock.push_back(
+            HudLine{
+                MakeSegment(L"[SYSTEM]", false)
+            });
+
+        topLeftBlock.push_back(
+            HudLine{
+                MakeSegment(L"FPS: ", false),
+                MakeSegment(fpsText, false)
+            });
+
+        topLeftBlock.push_back(
+            HudLine{
+                MakeSegment(L"Render Mode ", false),
+                MakeSegment(
+                    L"[Z]",
+                    hudInput.IsKeyDown('Z')),
+                MakeSegment(L": ", false),
+                MakeSegment(modeName, false)
+            });
+
+        topLeftBlock.push_back(
+            HudLine{
+                MakeSegment(L"PMX ", false),
+                MakeSegment(
+                    L"[X]",
+                    hudInput.IsKeyDown('X')),
+                MakeSegment(L": ", false),
+                MakeSegment(
+                    m_showCharacter
+                        ? L"ON"
+                        : L"OFF",
+                    false)
+            });
+
+        topLeftBlock.push_back(
+            HudLine{
+                MakeSegment(L"HUD ", false),
+                MakeSegment(
+                    L"[SPACE]",
+                    hudInput.IsKeyDown(VK_SPACE)),
+                MakeSegment(L": ON", false)
+            });
+
+        // ----------------------------------------------------------
+        // Build top-right block.
+        // ----------------------------------------------------------
+        HudBlock topRightBlock;
+
+        topRightBlock.push_back(
+            HudLine{
+                MakeSegment(L"[LIGHTING]", false)
+            });
+
+        topRightBlock.push_back(
+            HudLine{
+                MakeSegment(L"Direct Lights ", false),
+                MakeSegment(
+                    L"[J]",
+                    hudInput.IsKeyDown('J')),
+                MakeSegment(L": ", false),
+                MakeSegment(
+                    m_enableSceneLights
+                        ? L"ON"
+                        : L"OFF - Ambient only",
+                    false)
+            });
+
+        topRightBlock.push_back(
+            HudLine{
+                MakeSegment(L"Shadow Filter ", false),
+                MakeSegment(
+                    L"[F]",
+                    hudInput.IsKeyDown('F')),
+                MakeSegment(L": ", false),
+                MakeSegment(
+                    g_enablePcf
+                        ? L"PCF 3x3"
+                        : L"HARD 1x1",
+                    false)
+            });
+
+        topRightBlock.push_back(
+            HudLine{
+                MakeSegment(L"Horizontal [", false),
+                MakeSegment(
+                    L"H",
+                    hudInput.IsKeyDown('H')),
+                MakeSegment(L" / ", false),
+                MakeSegment(
+                    L"K",
+                    hudInput.IsKeyDown('K')),
+                MakeSegment(L"]", false)
+            });
+
+        topRightBlock.push_back(
+            HudLine{
+                MakeSegment(L"Vertical [", false),
+                MakeSegment(
+                    L"U",
+                    hudInput.IsKeyDown('U')),
+                MakeSegment(L" / ", false),
+                MakeSegment(
+                    L"M",
+                    hudInput.IsKeyDown('M')),
+                MakeSegment(L"]", false)
+            });
+
+        // ----------------------------------------------------------
+        // Build bottom-left block.
+        // ----------------------------------------------------------
+        HudBlock bottomLeftBlock;
+
+        bottomLeftBlock.push_back(
+            HudLine{
+                MakeSegment(L"[CAMERA]", false)
+            });
+
+        bottomLeftBlock.push_back(
+            HudLine{
+                MakeSegment(L"Move: [", false),
+                MakeSegment(
+                    L"W",
+                    hudInput.IsKeyDown('W')),
+                MakeSegment(L" / ", false),
+                MakeSegment(
+                    L"A",
+                    hudInput.IsKeyDown('A')),
+                MakeSegment(L" / ", false),
+                MakeSegment(
+                    L"S",
+                    hudInput.IsKeyDown('S')),
+                MakeSegment(L" / ", false),
+                MakeSegment(
+                    L"D",
+                    hudInput.IsKeyDown('D')),
+                MakeSegment(L"]", false)
+            });
+
+        bottomLeftBlock.push_back(
+            HudLine{
+                MakeSegment(L"Up ", false),
+                MakeSegment(
+                    L"[E]",
+                    hudInput.IsKeyDown('E')),
+                MakeSegment(L" / Down ", false),
+                MakeSegment(
+                    L"[Q]",
+                    hudInput.IsKeyDown('Q'))
+            });
+
+        bottomLeftBlock.push_back(
+            HudLine{
+                MakeSegment(L"Look: Mouse", false)
+            });
+
+        bottomLeftBlock.push_back(
+            HudLine{
+                MakeSegment(L"Unlock Cursor: ", false),
+                MakeSegment(
+                    L"[ESC]",
+                    hudInput.IsKeyDown(VK_ESCAPE))
+            });
+
+        bottomLeftBlock.push_back(
+            HudLine{
+                MakeSegment(
+                    L"Pan (Need Unlock): ",
+                    false),
+                MakeSegment(
+                    L"[Right Mouse]",
+                    hudInput.IsKeyDown(VK_RBUTTON))
+            });
+
+        // ----------------------------------------------------------
+        // Build bottom-right block.
+        // ----------------------------------------------------------
+        HudBlock bottomRightBlock;
+
+        bottomRightBlock.push_back(
+            HudLine{
+                MakeSegment(L"[POST PROCESS]", false)
+            });
+
+        bottomRightBlock.push_back(
+            HudLine{
+                MakeSegment(
+                    L"Tone Mapping: ACES",
+                    false)
+            });
+
+        bottomRightBlock.push_back(
+            HudLine{
+                MakeSegment(L"Exposure [", false),
+                MakeSegment(
+                    L"UP",
+                    hudInput.IsKeyDown(VK_UP)),
+                MakeSegment(L" / ", false),
+                MakeSegment(
+                    L"DOWN",
+                    hudInput.IsKeyDown(VK_DOWN)),
+                MakeSegment(L"]: ", false),
+                MakeSegment(exposureText, false)
+            });
+
+        bottomRightBlock.push_back(
+            HudLine{
+                MakeSegment(
+                    L"---------------",
+                    false)
+            });
+
+        bottomRightBlock.push_back(
+            HudLine{
+                MakeSegment(L"SSAO ", false),
+                MakeSegment(
+                    L"[C]",
+                    hudInput.IsKeyDown('C')),
+                MakeSegment(L": ", false),
+                MakeSegment(
+                    m_enableSsao
+                        ? L"ON"
+                        : L"OFF",
+                    false)
+            });
+
+        bottomRightBlock.push_back(
+            HudLine{
+                MakeSegment(L"Radius: ", false),
+                MakeSegment(
+                    L"[",
+                    hudInput.IsKeyDown(VK_OEM_4)),
+                MakeSegment(
+                    L" decrease | ",
+                    false),
+                MakeSegment(
+                    L"]",
+                    hudInput.IsKeyDown(VK_OEM_6)),
+                MakeSegment(
+                    L" increase",
+                    false)
+            });
+
+        bottomRightBlock.push_back(
+            HudLine{
+                MakeSegment(L"Value: ", false),
+                MakeSegment(radiusText, false)
+            });
+
+        bottomRightBlock.push_back(
+            HudLine{
+                MakeSegment(L"Bias: ", false),
+                MakeSegment(
+                    L";",
+                    hudInput.IsKeyDown(VK_OEM_1)),
+                MakeSegment(
+                    L" decrease | ",
+                    false),
+                MakeSegment(
+                    L"'",
+                    hudInput.IsKeyDown(VK_OEM_7)),
+                MakeSegment(
+                    L" increase",
+                    false)
+            });
+
+        bottomRightBlock.push_back(
+            HudLine{
+                MakeSegment(L"Value: ", false),
+                MakeSegment(biasText, false)
+            });
+
+        bottomRightBlock.push_back(
+            HudLine{
+                MakeSegment(L"Intensity: ", false),
+                MakeSegment(
+                    L",",
+                    hudInput.IsKeyDown(
+                        VK_OEM_COMMA)),
+                MakeSegment(
+                    L" decrease | ",
+                    false),
+                MakeSegment(
+                    L".",
+                    hudInput.IsKeyDown(
+                        VK_OEM_PERIOD)),
+                MakeSegment(
+                    L" increase",
+                    false)
+            });
+
+        bottomRightBlock.push_back(
+            HudLine{
+                MakeSegment(L"Value: ", false),
+                MakeSegment(intensityText, false)
+            });
+
+        auto MeasureSegmentWidth =
+            [&](const std::wstring& text)
+        {
+            if (text.empty())
+                return 0.0f;
+
+            DirectX::XMFLOAT2 size = {};
 
             DirectX::XMStoreFloat2(
-                &rawSize,
-                m_spriteFont->MeasureString(text));
+                &size,
+                m_spriteFont->MeasureString(
+                    text.c_str()));
+
+            return size.x * hudScale;
+        };
+
+        auto MeasureBlock =
+            [&](const HudBlock& block)
+        {
+            float maximumWidth = 0.0f;
+
+            for (size_t lineIndex = 0;
+                 lineIndex < block.size();
+                 ++lineIndex)
+            {
+                float lineWidth = 0.0f;
+
+                const HudLine& line =
+                    block[lineIndex];
+
+                for (size_t segmentIndex = 0;
+                     segmentIndex < line.size();
+                     ++segmentIndex)
+                {
+                    lineWidth +=
+                        MeasureSegmentWidth(
+                            line[segmentIndex].first);
+                }
+
+                if (lineWidth > maximumWidth)
+                    maximumWidth = lineWidth;
+            }
 
             return DirectX::SimpleMath::Vector2(
-                rawSize.x * hudScale,
-                rawSize.y * hudScale);
+                maximumWidth,
+                static_cast<float>(
+                    block.size()) *
+                lineHeight);
         };
 
-        auto DrawHudText =
-            [&](const wchar_t* text,
-                const DirectX::SimpleMath::Vector2& position)
+        auto DrawBlock =
+            [&](const HudBlock& block,
+                const DirectX::SimpleMath::Vector2&
+                    blockPosition)
         {
-            // Compact black shadow for readability.
-            m_spriteFont->DrawString(
-                m_spriteBatch.get(),
-                text,
-                position +
-                    DirectX::SimpleMath::Vector2(
-                        shadowOffset,
-                        shadowOffset),
-                DirectX::Colors::Black,
-                0.0f,
-                DirectX::SimpleMath::Vector2(0.0f, 0.0f),
-                hudScale);
+            for (size_t lineIndex = 0;
+                 lineIndex < block.size();
+                 ++lineIndex)
+            {
+                const HudLine& line =
+                    block[lineIndex];
 
-            m_spriteFont->DrawString(
-                m_spriteBatch.get(),
-                text,
-                position,
-                DirectX::Colors::White,
-                0.0f,
-                DirectX::SimpleMath::Vector2(0.0f, 0.0f),
-                hudScale);
+                const float lineY =
+                    blockPosition.y +
+                    static_cast<float>(
+                        lineIndex) *
+                    lineHeight;
+
+                // Draw every segment's shadow first.
+                float currentX =
+                    blockPosition.x;
+
+                for (size_t segmentIndex = 0;
+                     segmentIndex < line.size();
+                     ++segmentIndex)
+                {
+                    const HudSegment& segment =
+                        line[segmentIndex];
+
+                    m_spriteFont->DrawString(
+                        m_spriteBatch.get(),
+                        segment.first.c_str(),
+                        DirectX::SimpleMath::Vector2(
+                            currentX +
+                                shadowOffset,
+                            lineY +
+                                shadowOffset),
+                        DirectX::Colors::Black,
+                        0.0f,
+                        DirectX::SimpleMath::Vector2(
+                            0.0f,
+                            0.0f),
+                        hudScale);
+
+                    currentX +=
+                        MeasureSegmentWidth(
+                            segment.first);
+                }
+
+                // Draw the foreground from the same exact positions.
+                currentX =
+                    blockPosition.x;
+
+                for (size_t segmentIndex = 0;
+                     segmentIndex < line.size();
+                     ++segmentIndex)
+                {
+                    const HudSegment& segment =
+                        line[segmentIndex];
+
+                    if (segment.second)
+                    {
+                        m_spriteFont->DrawString(
+                            m_spriteBatch.get(),
+                            segment.first.c_str(),
+                            DirectX::SimpleMath::Vector2(
+                                currentX,
+                                lineY),
+                            DirectX::Colors::Red,
+                            0.0f,
+                            DirectX::SimpleMath::Vector2(
+                                0.0f,
+                                0.0f),
+                            hudScale);
+                    }
+                    else
+                    {
+                        m_spriteFont->DrawString(
+                            m_spriteBatch.get(),
+                            segment.first.c_str(),
+                            DirectX::SimpleMath::Vector2(
+                                currentX,
+                                lineY),
+                            DirectX::Colors::White,
+                            0.0f,
+                            DirectX::SimpleMath::Vector2(
+                                0.0f,
+                                0.0f),
+                            hudScale);
+                    }
+
+                    currentX +=
+                        MeasureSegmentWidth(
+                            segment.first);
+                }
+            }
         };
 
-        const DirectX::SimpleMath::Vector2 topLeftSize =
-            MeasureScaledText(topLeftText);
+        const DirectX::SimpleMath::Vector2
+            topLeftSize =
+                MeasureBlock(topLeftBlock);
 
-        const DirectX::SimpleMath::Vector2 topRightSize =
-            MeasureScaledText(topRightText);
+        const DirectX::SimpleMath::Vector2
+            topRightSize =
+                MeasureBlock(topRightBlock);
 
-        const DirectX::SimpleMath::Vector2 bottomLeftSize =
-            MeasureScaledText(bottomLeftText);
+        const DirectX::SimpleMath::Vector2
+            bottomLeftSize =
+                MeasureBlock(bottomLeftBlock);
 
-        const DirectX::SimpleMath::Vector2 bottomRightSize =
-            MeasureScaledText(bottomRightText);
+        const DirectX::SimpleMath::Vector2
+            bottomRightSize =
+                MeasureBlock(bottomRightBlock);
 
-        const DirectX::SimpleMath::Vector2 topLeftPosition(
-            margin,
-            margin);
+        const DirectX::SimpleMath::Vector2
+            topLeftPosition(
+                margin,
+                margin);
 
-        const DirectX::SimpleMath::Vector2 topRightPosition(
-            static_cast<float>(m_width) -
-                margin -
-                topRightSize.x,
-            margin);
+        const DirectX::SimpleMath::Vector2
+            topRightPosition(
+                static_cast<float>(m_width) -
+                    margin -
+                    topRightSize.x,
+                margin);
 
-        const DirectX::SimpleMath::Vector2 bottomLeftPosition(
-            margin,
-            static_cast<float>(m_height) -
-                margin -
-                bottomLeftSize.y);
+        const DirectX::SimpleMath::Vector2
+            bottomLeftPosition(
+                margin,
+                static_cast<float>(m_height) -
+                    margin -
+                    bottomLeftSize.y);
 
-        const DirectX::SimpleMath::Vector2 bottomRightPosition(
-            static_cast<float>(m_width) -
-                margin -
-                bottomRightSize.x,
-            static_cast<float>(m_height) -
-                margin -
-                bottomRightSize.y);
+        const DirectX::SimpleMath::Vector2
+            bottomRightPosition(
+                static_cast<float>(m_width) -
+                    margin -
+                    bottomRightSize.x,
+                static_cast<float>(m_height) -
+                    margin -
+                    bottomRightSize.y);
 
-        DrawHudText(
-            topLeftText,
+        DrawBlock(
+            topLeftBlock,
             topLeftPosition);
 
-        DrawHudText(
-            topRightText,
+        DrawBlock(
+            topRightBlock,
             topRightPosition);
 
-        DrawHudText(
-            bottomLeftText,
+        DrawBlock(
+            bottomLeftBlock,
             bottomLeftPosition);
 
-        DrawHudText(
-            bottomRightText,
+        DrawBlock(
+            bottomRightBlock,
             bottomRightPosition);
 
         m_spriteBatch->End();
